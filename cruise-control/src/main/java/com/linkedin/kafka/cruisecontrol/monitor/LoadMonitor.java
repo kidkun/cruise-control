@@ -14,6 +14,7 @@ import com.linkedin.cruisecontrol.monitor.sampling.aggregator.Extrapolation;
 import com.linkedin.cruisecontrol.monitor.sampling.aggregator.MetricSampleCompleteness;
 import com.linkedin.cruisecontrol.monitor.sampling.aggregator.MetricValues;
 import com.linkedin.cruisecontrol.monitor.sampling.aggregator.ValuesAndExtrapolations;
+import com.linkedin.kafka.cruisecontrol.KafkaCruiseControlUtils;
 import com.linkedin.kafka.cruisecontrol.analyzer.AnalyzerUtils;
 import com.linkedin.kafka.cruisecontrol.common.KafkaCruiseControlThreadFactory;
 import com.linkedin.kafka.cruisecontrol.common.MetadataClient;
@@ -50,18 +51,25 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import org.apache.kafka.clients.Metadata;
+import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.common.Cluster;
+import org.apache.kafka.common.KafkaFuture;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.internals.ClusterResourceListeners;
+import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.requests.DescribeLogDirsResponse;
 import org.apache.kafka.common.utils.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static com.linkedin.kafka.cruisecontrol.model.Disk.State.*;
 
 /**
  * The LoadMonitor monitors the workload of a Kafka cluster. It periodically triggers the metric sampling and
@@ -74,6 +82,7 @@ public class LoadMonitor {
   private static final Logger LOG = LoggerFactory.getLogger(LoadMonitor.class);
   // Metadata TTL is set based on experience -- i.e. a short TTL with large metadata may cause excessive load on brokers.
   private static final long METADATA_TTL = 10000L;
+  private static final long LOGDIR_RESPONSE_TIMEOUT_MS = 10000L;
   private final int _numPartitionMetricSampleWindows;
   private final LoadMonitorTaskRunner _loadMonitorTaskRunner;
   private final KafkaPartitionMetricSampleAggregator _partitionMetricSampleAggregator;
@@ -81,6 +90,7 @@ public class LoadMonitor {
   // A semaphore to help throttle the simultaneous cluster model creation
   private final Semaphore _clusterModelSemaphore;
   private final MetadataClient _metadataClient;
+  private final AdminClient _adminClient;
   private final BrokerCapacityConfigResolver _brokerCapacityConfigResolver;
   private final TopicConfigProvider _topicConfigProvider;
   private final ScheduledExecutorService _loadMonitorExecutor;
@@ -119,6 +129,7 @@ public class LoadMonitor {
                                          new ClusterResourceListeners()),
                             METADATA_TTL,
                             time),
+         KafkaCruiseControlUtils.createAdminClient(KafkaCruiseControlUtils.parseAdminClientConfigs(config)),
          time,
          dropwizardMetricRegistry,
          metricDef);
@@ -129,10 +140,13 @@ public class LoadMonitor {
    */
   LoadMonitor(KafkaCruiseControlConfig config,
               MetadataClient metadataClient,
+              AdminClient adminClient,
               Time time,
               MetricRegistry dropwizardMetricRegistry,
               MetricDef metricDef) {
     _metadataClient = metadataClient;
+
+    _adminClient = adminClient;
 
     _brokerCapacityConfigResolver = config.getConfiguredInstance(KafkaCruiseControlConfig.BROKER_CAPACITY_CONFIG_RESOLVER_CLASS_CONFIG,
                                                                  BrokerCapacityConfigResolver.class);
@@ -196,6 +210,7 @@ public class LoadMonitor {
     }
     _loadMonitorTaskRunner.shutdown();
     _metadataClient.close();
+    KafkaCruiseControlUtils.closeAdminClientWithTimeout(_adminClient);
     LOG.info("Load Monitor shutdown completed.");
   }
 
@@ -427,11 +442,29 @@ public class LoadMonitor {
    * @param requirements the load completeness requirements.
    * @param operationProgress the progress of the job to report.
    * @return A cluster model with the available snapshots whose timestamp is in the given window.
-   * @throws NotEnoughValidWindowsException
    */
   public ClusterModel clusterModel(long from,
                                    long to,
                                    ModelCompletenessRequirements requirements,
+                                   OperationProgress operationProgress)
+      throws NotEnoughValidWindowsException {
+    return clusterModel(from, to, requirements, false, operationProgress);
+  }
+
+  /**
+   * Get the cluster load model for a time range.
+   *
+   * @param from start of the time window
+   * @param to end of the time window
+   * @param requirements the load completeness requirements.
+   * @param populateDiskInfo whether populate disk information.
+   * @param operationProgress the progress of the job to report.
+   * @return A cluster model with the available snapshots whose timestamp is in the given window.
+   */
+  public ClusterModel clusterModel(long from,
+                                   long to,
+                                   ModelCompletenessRequirements requirements,
+                                   boolean populateDiskInfo,
                                    OperationProgress operationProgress)
       throws NotEnoughValidWindowsException {
     long start = System.currentTimeMillis();
@@ -475,7 +508,7 @@ public class LoadMonitor {
         clusterModel.createBroker(rack, node.host(), node.id(), brokerCapacity);
       }
 
-      // populate snapshots for the cluster model.
+      // Populate snapshots for the cluster model.
       for (Map.Entry<PartitionEntity, ValuesAndExtrapolations> entry : loadSnapshots.entrySet()) {
         TopicPartition tp = entry.getKey().tp();
         ValuesAndExtrapolations leaderLoad = entry.getValue();
@@ -490,6 +523,29 @@ public class LoadMonitor {
           clusterModel.setBrokerState(brokerId, Broker.State.BAD_DISKS);
         }
       }
+
+      // Populate disk information for the cluster model.
+      if (populateDiskInfo) {
+        Map<Integer, KafkaFuture<Map<String, DescribeLogDirsResponse.LogDirInfo>>> logDirsByBrokerId =
+            _adminClient.describeLogDirs(clusterModel.aliveBrokers().stream().mapToInt(Broker::id).boxed().collect(Collectors.toList())).values();
+        for (Map.Entry<Integer, KafkaFuture<Map<String, DescribeLogDirsResponse.LogDirInfo>>> entry : logDirsByBrokerId.entrySet()) {
+          Broker broker = clusterModel.broker(entry.getKey());
+          try {
+            entry.getValue().get(LOGDIR_RESPONSE_TIMEOUT_MS, TimeUnit.MILLISECONDS).forEach((key, value) -> {
+              if (value.error == Errors.NONE) {
+                broker.populateDiskInfo(key, value.replicaInfos);
+              } else {
+                broker.disk(key).setState(DEAD);
+              }
+            });
+          } catch (TimeoutException te) {
+            LOG.error("Getting log dir information for broker {} timed out.", entry.getKey());
+          } catch (Exception e) {
+            LOG.error("Getting log dir information for broker {} encountered exception {}.", entry.getKey(), e);
+          }
+        }
+      }
+
       if (LOG.isDebugEnabled()) {
         LOG.debug("Generated cluster model in {} ms", System.currentTimeMillis() - start);
       }
