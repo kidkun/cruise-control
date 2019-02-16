@@ -24,6 +24,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.PartitionInfo;
@@ -34,6 +35,7 @@ import static org.junit.Assert.assertEquals;
 import static com.linkedin.kafka.cruisecontrol.common.TestConstants.TOPIC0;
 import static com.linkedin.kafka.cruisecontrol.common.TestConstants.TOPIC1;
 import static com.linkedin.kafka.cruisecontrol.common.TestConstants.TOPIC2;
+import static com.linkedin.kafka.cruisecontrol.model.ClusterModel.ReplicaPlacementInfo;
 
 
 public class PreferredLeaderElectionGoalTest {
@@ -113,7 +115,7 @@ public class PreferredLeaderElectionGoalTest {
     Cluster cluster = clusterModelAndInfo._clusterInfo;
     clusterModel.setBrokerState(1, Broker.State.DEMOTED);
 
-    Map<TopicPartition, List<Integer>> originalReplicaDistribution = clusterModel.getReplicaDistribution();
+    Map<TopicPartition, List<ReplicaPlacementInfo>> originalReplicaDistribution = clusterModel.getReplicaDistribution();
     PreferredLeaderElectionGoal goal = new PreferredLeaderElectionGoal(true, false, cluster);
     goal.optimize(clusterModel, Collections.emptySet(), new OptimizationOptions(Collections.emptySet()));
 
@@ -131,18 +133,18 @@ public class PreferredLeaderElectionGoalTest {
     ClusterModel clusterModel = createClusterModel(true)._clusterModel;
     clusterModel.setBrokerState(2, Broker.State.DEMOTED);
 
-    Map<TopicPartition, Integer> originalLeaderDistribution = clusterModel.getLeaderDistribution();
-    Map<TopicPartition, List<Integer>> originalReplicaDistribution = clusterModel.getReplicaDistribution();
+    Map<TopicPartition, ReplicaPlacementInfo> originalLeaderDistribution = clusterModel.getLeaderDistribution();
+    Map<TopicPartition, List<ReplicaPlacementInfo>> originalReplicaDistribution = clusterModel.getReplicaDistribution();
     PreferredLeaderElectionGoal goal = new PreferredLeaderElectionGoal(false, true, null);
     goal.optimize(clusterModel, Collections.emptySet(), new OptimizationOptions(Collections.emptySet()));
-    Map<TopicPartition, List<Integer>> optimizedReplicaDistribution = clusterModel.getReplicaDistribution();
+    Map<TopicPartition, List<ReplicaPlacementInfo>> optimizedReplicaDistribution = clusterModel.getReplicaDistribution();
 
     for (String t : Arrays.asList(TOPIC0, TOPIC1, TOPIC2)) {
       for (int p = 0; p < 3; p++) {
         TopicPartition tp = new TopicPartition(t, p);
         if (originalReplicaDistribution.get(tp).contains(2)) {
-          if (originalLeaderDistribution.get(tp) == 2) {
-            List<Integer> replicas = optimizedReplicaDistribution.get(tp);
+          if (originalLeaderDistribution.get(tp)._brokerId == 2) {
+            List<Integer> replicas = optimizedReplicaDistribution.get(tp).stream().mapToInt(rw -> rw._brokerId).boxed().collect(Collectors.toList());
             assertEquals("Tp " + tp, 2, replicas.get(replicas.size() - 1).intValue());
           } else {
             assertEquals("Tp " + tp, originalReplicaDistribution.get(tp), optimizedReplicaDistribution.get(tp));
@@ -159,17 +161,17 @@ public class PreferredLeaderElectionGoalTest {
     Cluster cluster = clusterModelAndInfo._clusterInfo;
     clusterModel.setBrokerState(0, Broker.State.DEMOTED);
 
-    Map<TopicPartition, Integer> originalLeaderDistribution = clusterModel.getLeaderDistribution();
+    Map<TopicPartition, ReplicaPlacementInfo> originalLeaderDistribution = clusterModel.getLeaderDistribution();
     PreferredLeaderElectionGoal goal = new PreferredLeaderElectionGoal(true, true, cluster);
     goal.optimize(clusterModel, Collections.emptySet(), new OptimizationOptions(Collections.emptySet()));
-    Map<TopicPartition, Integer> optimizedLeaderDistribution = clusterModel.getLeaderDistribution();
-    Map<TopicPartition, List<Integer>> optimizedReplicaDistribution = clusterModel.getReplicaDistribution();
+    Map<TopicPartition, ReplicaPlacementInfo> optimizedLeaderDistribution = clusterModel.getLeaderDistribution();
+    Map<TopicPartition, List<ReplicaPlacementInfo>> optimizedReplicaDistribution = clusterModel.getReplicaDistribution();
 
     for (String t : Arrays.asList(TOPIC0, TOPIC1, TOPIC2)) {
       for (int p = 0; p < 3; p++) {
         TopicPartition tp = new TopicPartition(t, p);
-        if (originalLeaderDistribution.get(tp) == 0 && t.equals(TOPIC0)) {
-          List<Integer> replicas = optimizedReplicaDistribution.get(tp);
+        if (originalLeaderDistribution.get(tp)._brokerId == 0 && t.equals(TOPIC0)) {
+          List<Integer> replicas = optimizedReplicaDistribution.get(tp).stream().mapToInt(rw -> rw._brokerId).boxed().collect(Collectors.toList());
           assertEquals("Tp " + tp, 0, replicas.get(replicas.size() - 1).intValue());
         } else {
           assertEquals("Tp " + tp, originalLeaderDistribution.get(tp), optimizedLeaderDistribution.get(tp));

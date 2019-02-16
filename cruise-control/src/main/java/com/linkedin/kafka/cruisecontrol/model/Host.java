@@ -114,6 +114,15 @@ public class Host implements Serializable {
   }
 
   /**
+   * Handle capacity lose of {@link Resource}
+   * @param resource The resource type.
+   * @param reducedCapacity the capacity to lose.
+   */
+  void reduceCapacity(Resource resource, double reducedCapacity) {
+    _hostCapacity[resource.id()] -= reducedCapacity;
+  }
+
+  /**
    * The name of the host
    */
   public String name() {

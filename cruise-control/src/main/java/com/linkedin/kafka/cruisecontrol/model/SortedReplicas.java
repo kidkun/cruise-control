@@ -17,16 +17,16 @@ import java.util.function.Function;
 
 /**
  * <p>
- * A class used by the brokers to host the replicas sorted in a certain order.
+ * A class used by the brokers/disks to host the replicas sorted in a certain order.
  * </p>
  *
- *  The SortedReplicas uses three functions to sort the replicas in the broker.
+ *  The SortedReplicas uses three functions to sort the replicas in the broker/disk.
  *  <ul>
  *     <li>
  *      <tt>ScoreFunction</tt>: the score function generates a score for each replica to sort. The replicas are
  *      sorted based on their score in ascending order. Those who want a descending order need to use
  *      the descending iterator of {@link #sortedReplicas()}. As alternatives, {@link #reverselySortedReplicas()}
- *      and {@link #reverselySortedReplicaWrappers()} are provided for convenience.
+ *      are provided for convenience.
  *    </li>
  *    <li>
  *      <tt>SelectionFunction</tt>(optional): the selection function decides which replicas to include in the sorted
@@ -43,12 +43,13 @@ import java.util.function.Function;
  *
  * <p>
  *   The SortedReplicas are initialized lazily, i.e. until one of {@link #sortedReplicas()},
- *   {@link #reverselySortedReplicas()} and {@link #reverselySortedReplicaWrappers()} is invoked, the sorted replicas
+ *   {@link #reverselySortedReplicas()} and {@link #sortedReplicaWrappers()} is invoked, the sorted replicas
  *   will not be populated.
  * </p>
  */
 public class SortedReplicas {
   private final Broker _broker;
+  private final Disk _disk;
   private final Map<Replica, ReplicaWrapper> _replicaWrapperMap;
   private final NavigableSet<ReplicaWrapper> _sortedReplicas;
   private final Function<Replica, Boolean> _selectionFunc;
@@ -60,15 +61,17 @@ public class SortedReplicas {
                  Function<Replica, Boolean> selectionFunc,
                  Function<Replica, Integer> priorityFunction,
                  Function<Replica, Double> scoreFunction) {
-    this(broker, selectionFunc, priorityFunction, scoreFunction, true);
+    this(broker, null, selectionFunc, priorityFunction, scoreFunction, true);
   }
 
   SortedReplicas(Broker broker,
+                 Disk disk,
                  Function<Replica, Boolean> selectionFunc,
                  Function<Replica, Integer> priorityFunc,
                  Function<Replica, Double> scoreFunc,
                  boolean initialize) {
     _broker = broker;
+    _disk = disk;
     _sortedReplicas = new TreeSet<>();
     _replicaWrapperMap = new HashMap<>();
     _selectionFunc = selectionFunc;
@@ -81,29 +84,26 @@ public class SortedReplicas {
   }
 
   /**
-   * Get the sorted replicas in the ascending order of their priority and score.
+   * Get the sorted replica wrappers in the ascending order of their priority and score.
    * This method initialize the sorted replicas if it hasn't been initialized.
    *
-   * @return the sorted replicas in the ascending order of their priority and score.
+   * @return the sorted replicas wrappers in the ascending order of their priority and score.
    */
-  public NavigableSet<ReplicaWrapper> sortedReplicas() {
+  public NavigableSet<ReplicaWrapper> sortedReplicaWrappers() {
     ensureInitialize();
     return Collections.unmodifiableNavigableSet(_sortedReplicas);
   }
 
   /**
-   * Get a list of replica wrappers in the descending order of their priority and score.
+   * Get the sorted replicas in the ascending order of their priority and score.
    * This method initialize the sorted replicas if it hasn't been initialized.
    *
-   * @return a list of replica wrappers in the descending order of their priority and score.
+   * @return the sorted replicas in the ascending order of their priority and score.
    */
-  public List<ReplicaWrapper> reverselySortedReplicaWrappers() {
+  public List<Replica> sortedReplicas() {
     ensureInitialize();
-    List<ReplicaWrapper> result = new ArrayList<>(_sortedReplicas.size());
-    Iterator<ReplicaWrapper> reverseIter = _sortedReplicas.descendingIterator();
-    while (reverseIter.hasNext()) {
-      result.add(reverseIter.next());
-    }
+    List<Replica> result = new ArrayList<>(_sortedReplicas.size());
+    _sortedReplicas.forEach(rw -> result.add(rw.replica()));
     return result;
   }
 
@@ -150,7 +150,7 @@ public class SortedReplicas {
    *
    * @param replica the replica to add.
    */
-  void add(Replica replica) {
+  public void add(Replica replica) {
     if (_initialized) {
       if (_selectionFunc == null || _selectionFunc.apply(replica)) {
         double score = _scoreFunc.apply(replica);
@@ -166,7 +166,7 @@ public class SortedReplicas {
    *
    * @param replica the replica to remove.
    */
-  void remove(Replica replica) {
+  public void remove(Replica replica) {
     if (_initialized) {
       ReplicaWrapper rw = _replicaWrapperMap.remove(replica);
       if (rw != null) {
@@ -183,7 +183,11 @@ public class SortedReplicas {
   private void ensureInitialize() {
     if (!_initialized) {
       _initialized = true;
-      _broker.replicas().forEach(this::add);
+      if (_disk != null) {
+        _disk.replicas().forEach(this::add);
+      } else {
+        _broker.replicas().forEach(this::add);
+      }
     }
   }
 

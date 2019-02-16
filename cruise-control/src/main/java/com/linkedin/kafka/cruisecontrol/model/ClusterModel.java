@@ -22,6 +22,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
@@ -133,15 +134,18 @@ public class ClusterModel implements Serializable {
    *
    * @return The replica distribution of leader and follower replicas in the cluster at the point of call.
    */
-  public Map<TopicPartition, List<Integer>> getReplicaDistribution() {
-    Map<TopicPartition, List<Integer>> replicaDistribution = new HashMap<>(_partitionsByTopicPartition.size());
+  public Map<TopicPartition, List<ReplicaPlacementInfo>> getReplicaDistribution() {
+    Map<TopicPartition, List<ReplicaPlacementInfo>> replicaDistribution = new HashMap<>(_partitionsByTopicPartition.size());
 
     for (Map.Entry<TopicPartition, Partition> entry : _partitionsByTopicPartition.entrySet()) {
       TopicPartition tp = entry.getKey();
       Partition partition = entry.getValue();
-      List<Integer> brokerIds = partition.replicas().stream().map(r -> r.broker().id()).collect(Collectors.toList());
+      List<ReplicaPlacementInfo> replicaPlacementInfos = partition.replicas().stream()
+                                                         .map(r -> r.disk() == null ? new ReplicaPlacementInfo(r.broker().id()) :
+                                                                                      new ReplicaPlacementInfo(r.broker().id(), r.disk().logDir()))
+                                                         .collect(Collectors.toList());
       // Add distribution of replicas in the partition.
-      replicaDistribution.put(tp, brokerIds);
+      replicaDistribution.put(tp, replicaPlacementInfos);
     }
 
     return replicaDistribution;
@@ -150,10 +154,15 @@ public class ClusterModel implements Serializable {
   /**
    * Get leader broker ids for each partition.
    */
-  public Map<TopicPartition, Integer> getLeaderDistribution() {
-    Map<TopicPartition, Integer> leaders = new HashMap<>(_partitionsByTopicPartition.size());
+  public Map<TopicPartition, ReplicaPlacementInfo> getLeaderDistribution() {
+    Map<TopicPartition, ReplicaPlacementInfo> leaders = new HashMap<>(_partitionsByTopicPartition.size());
     for (Map.Entry<TopicPartition, Partition> entry : _partitionsByTopicPartition.entrySet()) {
-      leaders.put(entry.getKey(), entry.getValue().leader().broker().id());
+      Replica leaderReplica = entry.getValue().leader();
+      if (leaderReplica.disk() == null) {
+        leaders.put(entry.getKey(), new ReplicaPlacementInfo(leaderReplica.broker().id()));
+      } else {
+        leaders.put(entry.getKey(), new ReplicaPlacementInfo(leaderReplica.broker().id(), leaderReplica.disk().logDir()));
+      }
     }
     return leaders;
   }
@@ -280,30 +289,66 @@ public class ClusterModel implements Serializable {
   }
 
   /**
-   * (1) Remove the replica from the source broker,
-   * (2) Set the broker of the removed replica as the destination broker,
-   * (3) Add this replica to the destination broker.
+   * Set the given disk to dead state.
+   *
+   * @param brokerId Id of the broker on which the disk resides.
+   * @param logdir   Log directory of the disk.
+   */
+  public void markDiskDead(int brokerId, String logdir) {
+    Broker broker = broker(brokerId);
+    if (broker == null) {
+      throw new IllegalArgumentException("Broker " + brokerId + " does not exist.");
+    }
+    double reducedCapacity = broker.markDiskDead(logdir);
+    // We need to go through host and rack so all the cached capacity will be updated.
+    broker.host().reduceCapacity(Resource.DISK, reducedCapacity);
+    broker.rack().reduceCapacity(Resource.DISK, reducedCapacity);
+    _selfHealingEligibleReplicas.addAll(broker.currentOfflineReplicas());
+    refreshCapacity();
+  }
+
+  /**
+   * For replica movement across the broker/disk:
+   *    (1) Remove the replica from the source broker/disk,
+   *    (2) Set the broker/disk of the removed replica as the destination broker/disk,
+   *    (3) Add this replica to the destination broker/disk.
    * * There is no need to make any modifications to _partitionsByTopicPartition because even after the move,
    * partitions will contain the same replicas.
    *
-   * @param tp      Partition Info of the replica to be relocated.
-   * @param sourceBrokerId      Source broker id.
-   * @param destinationBrokerId Destination broker id.
+   * @param tp                      Partition Info of the replica to be relocated.
+   * @param sourceBrokerId          Source broker id.
+   * @param sourceBrokerLogdir      Source broker logdir.
+   * @param destinationBrokerId     Destination broker id.
+   * @param destinationBrokerLogdir Destination broker logdir.
    */
-  public void relocateReplica(TopicPartition tp, int sourceBrokerId, int destinationBrokerId) {
-    // Removes the replica and related load from the source broker / source rack / cluster.
-    Replica replica = removeReplica(sourceBrokerId, tp);
-    if (replica == null) {
-      throw new IllegalArgumentException("Replica is not in the cluster.");
-    }
-    // Updates the broker of the removed replica with destination broker.
-    replica.setBroker(broker(destinationBrokerId));
 
-    // Add this replica and related load to the destination broker / destination rack / cluster.
-    replica.broker().rack().addReplica(replica);
-    _load.addLoad(replica.load());
-    // Add leadership load to the destination replica.
-    _potentialLeadershipLoadByBrokerId.get(destinationBrokerId).addLoad(partition(tp).leader().load());
+  public void relocateReplica(TopicPartition tp,
+                              int sourceBrokerId,
+                              String sourceBrokerLogdir,
+                              int destinationBrokerId,
+                              String destinationBrokerLogdir) {
+    if (sourceBrokerId != destinationBrokerId) {
+      // Removes the replica and related load from the source broker / source rack / cluster.
+      Replica replica = removeReplica(sourceBrokerId, tp);
+      if (replica == null) {
+        throw new IllegalArgumentException("Replica is not in the cluster.");
+      }
+      // Updates the broker of the removed replica with destination broker.
+      replica.setBroker(broker(destinationBrokerId));
+
+      // Add this replica and related load to the destination broker / destination rack / cluster.
+      replica.broker().rack().addReplica(replica);
+      _load.addLoad(replica.load());
+      // Add leadership load to the destination replica.
+      _potentialLeadershipLoadByBrokerId.get(destinationBrokerId).addLoad(partition(tp).leader().load());
+    } else {
+      // Move replica from the source disk to destination disk on the same broker.
+      broker(sourceBrokerId).moveReplicaBetweenDisk(tp, sourceBrokerLogdir, destinationBrokerLogdir);
+    }
+  }
+
+  public void relocateReplica(TopicPartition tp, int sourceBrokerId, int destinationBrokerId) {
+    relocateReplica(tp, sourceBrokerId, null, destinationBrokerId, null);
   }
 
   /**
@@ -1164,6 +1209,34 @@ public class ClusterModel implements Serializable {
         capacity += rack.capacityFor(r);
       }
       _clusterCapacity[r.id()] = capacity;
+    }
+  }
+
+  static public class ReplicaPlacementInfo {
+    public Integer _brokerId;
+    public String _logdir;
+
+    public ReplicaPlacementInfo(Integer brokerId, String logdir) {
+      _brokerId = brokerId;
+      _logdir = logdir;
+    }
+
+    public ReplicaPlacementInfo(Integer brokerId) {
+      this(brokerId, null);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      if (!(o instanceof ReplicaPlacementInfo)) {
+        return false;
+      }
+      ReplicaPlacementInfo info = (ReplicaPlacementInfo) o;
+      return _brokerId.equals(info._brokerId) && Objects.equals(_logdir, info._logdir);
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(_brokerId, _logdir);
     }
   }
 }

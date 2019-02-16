@@ -283,6 +283,15 @@ public class Rack implements Serializable {
     }
   }
 
+  /**
+   * Handle capacity lose of {@link Resource}
+   * @param resource The resource type.
+   * @param reducedCapacity the capacity to lose.
+   */
+  void reduceCapacity(Resource resource, double reducedCapacity) {
+    _rackCapacity[resource.id()] -= reducedCapacity;
+  }
+
   /*
    * Return an object that can be further used
    * to encode into JSON

@@ -66,6 +66,7 @@ public class TestConstants {
     properties.put(ClusterProperty.MEAN_DISK, 100.0);
     properties.put(ClusterProperty.MEAN_NW_IN, 100.0);
     properties.put(ClusterProperty.MEAN_NW_OUT, 100.0);
+    properties.put(ClusterProperty.POPULATE_DISKS, 0);
     BASE_PROPERTIES = Collections.unmodifiableMap(properties);
 
   }

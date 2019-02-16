@@ -50,6 +50,7 @@ import org.slf4j.LoggerFactory;
 
 import static com.linkedin.kafka.cruisecontrol.monitor.task.LoadMonitorTaskRunner.LoadMonitorTaskRunnerState.BOOTSTRAPPING;
 import static com.linkedin.kafka.cruisecontrol.monitor.task.LoadMonitorTaskRunner.LoadMonitorTaskRunnerState.LOADING;
+import static com.linkedin.kafka.cruisecontrol.model.ClusterModel.ReplicaPlacementInfo;
 
 
 /**
@@ -390,8 +391,8 @@ public class GoalOptimizer implements Runnable {
 
     LOG.trace("Cluster before optimization is {}", clusterModel);
     BrokerStats brokerStatsBeforeOptimization = clusterModel.brokerStats();
-    Map<TopicPartition, List<Integer>> initReplicaDistribution = clusterModel.getReplicaDistribution();
-    Map<TopicPartition, Integer> initLeaderDistribution = clusterModel.getLeaderDistribution();
+    Map<TopicPartition, List<ReplicaPlacementInfo>> initReplicaDistribution = clusterModel.getReplicaDistribution();
+    Map<TopicPartition, ReplicaPlacementInfo> initLeaderDistribution = clusterModel.getLeaderDistribution();
     boolean isSelfHealing = !clusterModel.selfHealingEligibleReplicas().isEmpty();
 
     // Set of balancing proposals that will be applied to the given cluster state to satisfy goals (leadership
@@ -400,8 +401,8 @@ public class GoalOptimizer implements Runnable {
     Set<String> violatedGoalNamesBeforeOptimization = new HashSet<>();
     Set<String> violatedGoalNamesAfterOptimization = new HashSet<>();
     Map<Goal, ClusterModelStats> statsByGoalPriority = new LinkedHashMap<>(goalsByPriority.size());
-    Map<TopicPartition, List<Integer>> preOptimizedReplicaDistribution = null;
-    Map<TopicPartition, Integer> preOptimizedLeaderDistribution = null;
+    Map<TopicPartition, List<ReplicaPlacementInfo>> preOptimizedReplicaDistribution = null;
+    Map<TopicPartition, ReplicaPlacementInfo> preOptimizedLeaderDistribution = null;
     Set<String> excludedTopics = excludedTopics(clusterModel, requestedExcludedTopics);
     LOG.debug("Topics excluded from partition movement: {}", excludedTopics);
     OptimizationOptions optimizationOptions = new OptimizationOptions(excludedTopics, excludedBrokersForLeadership, excludedBrokersForReplicaMove);

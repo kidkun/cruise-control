@@ -12,6 +12,7 @@ import com.linkedin.kafka.cruisecontrol.common.Resource;
 import com.linkedin.kafka.cruisecontrol.exception.OptimizationFailureException;
 import com.linkedin.kafka.cruisecontrol.model.Broker;
 import com.linkedin.kafka.cruisecontrol.model.ClusterModel;
+import com.linkedin.kafka.cruisecontrol.model.Disk;
 import com.linkedin.kafka.cruisecontrol.model.Replica;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -28,6 +29,7 @@ import java.util.stream.Collectors;
 public class GoalUtils {
   public static final int MIN_NUM_VALID_WINDOWS_FOR_SELF_HEALING = 1;
   private static final double DEAD_BROKER_UTILIZATION = 1.0;
+  private static final double DEAD_DISK_UTILIZATION = 1.0;
 
   private GoalUtils() {
 
@@ -151,25 +153,43 @@ public class GoalUtils {
 
   /**
    * Check whether the proposed action is legit. An action is legit if it is:
-   * (1) a replica movement and the destination does not have a replica of the same partition and is allowed to have a
-   * replica from the partition, or
-   * (2) a leadership movement, the replica is a leader and the destination broker has a follower of the same partition.
+   * (1) a replica movement across brokers, the destination broker does not have a replica of the same partition and is
+   * allowed to have a replica from the partition
+   * (2) a replica movement across the disks of the same broker, the destination disk is alive
+   * (3) a leadership movement, the replica is a leader and the destination broker has a follower of the same partition.
    *
    * @param replica Replica that is affected from the given action type.
    * @param destinationBroker Destination broker.
+   * @param destinationDisk Destination disk.
    * @param clusterModel Cluster model.
    * @param actionType Action type.
    * @return True if the move is legit, false otherwise.
    */
-  static boolean legitMove(Replica replica, Broker destinationBroker, ClusterModel clusterModel, ActionType actionType) {
-    if (actionType == ActionType.REPLICA_MOVEMENT
-        && clusterModel.partition(replica.topicPartition()).canAssignReplicaToBroker(destinationBroker)
-        && destinationBroker.replica(replica.topicPartition()) == null) {
-      return true;
-    }
 
-    return actionType == ActionType.LEADERSHIP_MOVEMENT && replica.isLeader()
-           && destinationBroker.replica(replica.topicPartition()) != null;
+  static boolean legitMove(Replica replica,
+                           Broker destinationBroker,
+                           Disk destinationDisk,
+                           ClusterModel clusterModel,
+                           ActionType actionType) {
+    switch (actionType) {
+      case REPLICA_MOVEMENT:
+        if (replica.broker() == destinationBroker) {
+          return destinationDisk != null && destinationDisk.state() == Disk.State.ALIVE;
+        } else {
+          // Replica movement across disk on different broker is not supported yet.
+          return destinationDisk == null
+                 && clusterModel.partition(replica.topicPartition()).canAssignReplicaToBroker(destinationBroker)
+                 && destinationBroker.replica(replica.topicPartition()) == null;
+        }
+      case LEADERSHIP_MOVEMENT:
+        return replica.isLeader() && destinationBroker.replica(replica.topicPartition()) != null;
+      default:
+        return false;
+    }
+  }
+
+  static boolean legitMove(Replica replica, Broker destinationBroker, ClusterModel clusterModel, ActionType actionType) {
+    return legitMove(replica, destinationBroker, null, clusterModel, actionType);
   }
 
   /**
@@ -267,5 +287,34 @@ public class GoalUtils {
   public static double utilizationPercentage(Broker broker, Resource resource) {
     double brokerCapacity = broker.capacityFor(resource);
     return brokerCapacity > 0 ? broker.load().expectedUtilizationFor(resource) / brokerCapacity : DEAD_BROKER_UTILIZATION;
+  }
+
+  /**
+   * Get the average utilization percentage of all the alive disk on the broker.
+   *
+   * @param broker Broker for which the average disk utilization percentage has been queried.
+   * @return Utilization percentage of the broker for the given resource.
+   */
+  public static double averageDiskUtilizationPercentage(Broker broker) {
+    double totalAliveDiskCapacity = 0;
+    double totalAliveDiskLoad = 0;
+    for (Disk disk : broker.disk()) {
+      if (disk.state() == Disk.State.ALIVE) {
+        totalAliveDiskCapacity += disk.capacity();
+        totalAliveDiskLoad += disk.load();
+      }
+    }
+    return totalAliveDiskCapacity > 0 ? totalAliveDiskLoad / totalAliveDiskCapacity : DEAD_BROKER_UTILIZATION;
+  }
+
+  /**
+   * Get the utilization percentage of the disk, or {@link #DEAD_DISK_UTILIZATION} if the disk is dead.
+   *
+   * @param disk Disk to query.
+   * @return Utilization percentage of the disk.
+   */
+  public static double diskUtilizationPercentage(Disk disk) {
+    double diskCapacity = disk.capacity();
+    return diskCapacity > 0 ? disk.load() / diskCapacity : DEAD_DISK_UTILIZATION;
   }
 }

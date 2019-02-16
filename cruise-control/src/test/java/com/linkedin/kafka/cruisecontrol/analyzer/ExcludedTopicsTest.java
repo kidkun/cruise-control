@@ -54,6 +54,7 @@ import static com.linkedin.kafka.cruisecontrol.common.DeterministicCluster.unbal
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.fail;
+import static com.linkedin.kafka.cruisecontrol.model.ClusterModel.ReplicaPlacementInfo;
 
 
 /**
@@ -247,8 +248,8 @@ public class ExcludedTopicsTest {
   @Test
   public void test() throws Exception {
     if (_exceptionClass == null) {
-      Map<TopicPartition, List<Integer>> initReplicaDistribution = _clusterModel.getReplicaDistribution();
-      Map<TopicPartition, Integer> initLeaderDistribution = _clusterModel.getLeaderDistribution();
+      Map<TopicPartition, List<ReplicaPlacementInfo>> initReplicaDistribution = _clusterModel.getReplicaDistribution();
+      Map<TopicPartition, ReplicaPlacementInfo> initLeaderDistribution = _clusterModel.getLeaderDistribution();
 
       Set<String> excludedTopics = _optimizationOptions.excludedTopics();
       if (_expectedToOptimize) {

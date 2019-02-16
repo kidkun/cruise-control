@@ -16,17 +16,21 @@ import java.util.Map;
 public class BalancingAction {
   private static final String TOPIC_PARTITION = "topicPartition";
   private static final String SOURCE_BROKER_ID = "sourceBrokerId";
+  private static final String SOURCE_BROKER_LOGDIR = "sourceBrokerLogdir";
   private static final String DESTINATION_BROKER_ID = "destinationBrokerId";
+  private static final String DESTINATION_BROKER_LOGIR = "destinationBrokerLogdir";
   private static final String DESTINATION_TOPIC_PARTITION = "destinationTopicPartition";
   private static final String ACTION_TYPE = "actionType";
   private final TopicPartition _tp;
   private final Integer _sourceBrokerId;
+  private final String _sourceBrokerLogdir;
+  private final String _destinationBrokerLogdir;
   private final Integer _destinationBrokerId;
   private final ActionType _actionType;
   private final TopicPartition _destinationTp;
 
   /**
-   * Constructor for creating a balancing proposal with given topic partition, source broker and destination id, and
+   * Constructor for creating a balancing proposal with given topic partition, source and destination broker id, and
    * balancing action.
    *
    * @param tp                  Topic partition of the replica.
@@ -56,9 +60,33 @@ public class BalancingAction {
                          Integer destinationBrokerId,
                          ActionType actionType,
                          TopicPartition destinationTp) {
+    this(sourceTp, sourceBrokerId, null, destinationBrokerId, null, actionType, destinationTp);
+  }
+
+  /**
+   * Constructor for creating a balancing proposal with given topic partitions, source and destination broker id and logdir,
+   * and the topic partition of replica to swap with.
+   *
+   * @param sourceTp                Topic partition of the source replica.
+   * @param sourceBrokerId          Source broker id of the replica.
+   * @param sourceBrokerLogdir      Source broker logdir of the replica.
+   * @param destinationBrokerId     Destination broker id of the replica.
+   * @param destinationBrokerLogdir Destination broker logdir of the replica.
+   * @param actionType              Action type.
+   * @param destinationTp           Topic partition of the replica to swap with.
+   */
+  public BalancingAction(TopicPartition sourceTp,
+                         Integer sourceBrokerId,
+                         String sourceBrokerLogdir,
+                         Integer destinationBrokerId,
+                         String destinationBrokerLogdir,
+                         ActionType actionType,
+                         TopicPartition destinationTp) {
     _tp = sourceTp;
     _sourceBrokerId = sourceBrokerId;
+    _sourceBrokerLogdir = sourceBrokerLogdir;
     _destinationBrokerId = destinationBrokerId;
+    _destinationBrokerLogdir = destinationBrokerLogdir;
     _actionType = actionType;
     _destinationTp = destinationTp;
     validate();
@@ -68,25 +96,39 @@ public class BalancingAction {
     switch (_actionType) {
       case REPLICA_ADDITION:
         if (_destinationBrokerId == null) {
-          throw new IllegalArgumentException("The destination broker cannot be null for balancing action " + _actionType);
+          throw new IllegalArgumentException("The destination broker cannot be null for balancing action " + this);
         } else if (_sourceBrokerId != null) {
-          throw new IllegalArgumentException("The source broker should be null for balancing action " + _actionType);
+          throw new IllegalArgumentException("The source broker should be null for balancing action " + this);
         }
         break;
       case REPLICA_DELETION:
         if (_destinationBrokerId != null) {
-          throw new IllegalArgumentException("The destination broker should be null for balancing action " + _actionType);
+          throw new IllegalArgumentException("The destination broker should be null for balancing action " + this);
         } else if (_sourceBrokerId == null) {
-          throw new IllegalArgumentException("The source broker cannot be null for balancing action " + _actionType);
+          throw new IllegalArgumentException("The source broker cannot be null for balancing action " + this);
         }
         break;
       case REPLICA_MOVEMENT:
       case LEADERSHIP_MOVEMENT:
       case REPLICA_SWAP:
         if (_destinationBrokerId == null) {
-          throw new IllegalArgumentException("The destination broker cannot be null for balancing action " + _actionType);
+          throw new IllegalArgumentException("The destination broker cannot be null for balancing action " + this);
         } else if (_sourceBrokerId == null) {
-          throw new IllegalArgumentException("The source broker cannot be null for balancing action " + _actionType);
+          throw new IllegalArgumentException("The source broker cannot be null for balancing action " + this);
+        }
+        if (_sourceBrokerLogdir != null || _destinationBrokerLogdir != null) {
+          if (_sourceBrokerLogdir == null) {
+            throw new IllegalArgumentException("The source disk is null while destination disk is not null "
+                                               + "for balancing action " + this);
+          }
+          if (_destinationBrokerLogdir == null) {
+            throw new IllegalArgumentException("The destination disk is null while source disk is not null."
+                                               + "for balancing action " + this);
+          }
+          if (!_sourceBrokerId.equals(_destinationBrokerId)) {
+            throw new IllegalArgumentException("Replica movement between disks across broker is not supported "
+                                               + "for balancing action " + this);
+          }
         }
         break;
       default:
@@ -130,6 +172,20 @@ public class BalancingAction {
   }
 
   /**
+   * Get the source broker logdir.
+   */
+  public String sourceBrokerLogdir() {
+    return _sourceBrokerLogdir;
+  }
+
+  /**
+   * Get the destination broker logdir.
+   */
+  public String destinationBrokerLogdir() {
+    return _destinationBrokerLogdir;
+  }
+
+  /**
    * Get the source broker id that is impacted by the balancing action.
    */
   public Integer sourceBrokerId() {
@@ -161,6 +217,10 @@ public class BalancingAction {
     proposalMap.put(DESTINATION_BROKER_ID, _destinationBrokerId);
     proposalMap.put(DESTINATION_TOPIC_PARTITION, _destinationTp);
     proposalMap.put(ACTION_TYPE, _actionType);
+    if (_sourceBrokerLogdir != null) {
+      proposalMap.put(SOURCE_BROKER_LOGDIR, _sourceBrokerLogdir);
+      proposalMap.put(DESTINATION_BROKER_LOGIR, _destinationBrokerLogdir);
+    }
     return proposalMap;
   }
 
@@ -170,8 +230,10 @@ public class BalancingAction {
   @Override
   public String toString() {
     String actSymbol = _actionType.equals(ActionType.REPLICA_SWAP) ? "<->" : "->";
-    return String.format("(%s%s%s, %d%s%d, %s)",
-                         _tp, actSymbol, _destinationTp, _sourceBrokerId, actSymbol, _destinationBrokerId, _actionType);
+    return String.format("(%s%s%s, %d%s%s%d%s, %s)",
+                         _tp, actSymbol, _destinationTp,
+                         _sourceBrokerId, _sourceBrokerLogdir == null ? "" : _sourceBrokerLogdir, actSymbol,
+                         _destinationBrokerId, _destinationBrokerLogdir == null ? "" : _destinationBrokerLogdir, _actionType);
   }
 
   /**
@@ -191,27 +253,18 @@ public class BalancingAction {
     }
 
     BalancingAction otherAction = (BalancingAction) other;
-    if (_sourceBrokerId == null) {
-      if (otherAction._sourceBrokerId != null) {
-        return false;
-      }
-    } else if (!_sourceBrokerId.equals(otherAction._sourceBrokerId)) {
-      return false;
-    }
-
-    if (_destinationBrokerId == null) {
-      if (otherAction._destinationBrokerId != null) {
-        return false;
-      }
-    } else if (!_destinationBrokerId.equals(otherAction._destinationBrokerId)) {
-      return false;
-    }
-
-    return _tp.equals(otherAction._tp) && _actionType == otherAction._actionType && _destinationTp.equals(otherAction._destinationTp);
+    return Objects.equals(_sourceBrokerId, otherAction._sourceBrokerId)
+           && Objects.equals(_sourceBrokerLogdir, otherAction._sourceBrokerLogdir)
+           && Objects.equals(_tp, otherAction._tp)
+           && Objects.equals(_destinationBrokerId, otherAction._destinationBrokerId)
+           && Objects.equals(_destinationBrokerLogdir, otherAction._destinationBrokerLogdir)
+           && Objects.equals(_destinationTp, otherAction._destinationTp)
+           && Objects.equals(_actionType, otherAction._actionType);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(_tp, _sourceBrokerId, _destinationBrokerId, _actionType, _destinationTp);
+    return Objects.hash(_tp, _sourceBrokerId, _sourceBrokerLogdir, _destinationBrokerId, _destinationBrokerLogdir,
+                        _actionType, _destinationTp);
   }
 }

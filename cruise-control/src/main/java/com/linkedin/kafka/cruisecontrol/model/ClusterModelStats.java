@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Map;
 import com.google.gson.Gson;
 
+import static com.linkedin.kafka.cruisecontrol.analyzer.goals.GoalUtils.averageDiskUtilizationPercentage;
+import static com.linkedin.kafka.cruisecontrol.analyzer.goals.GoalUtils.diskUtilizationPercentage;
 
 public class ClusterModelStats {
   private final Map<Statistic, Map<Resource, Double>> _resourceUtilizationStats;
@@ -29,6 +31,8 @@ public class ClusterModelStats {
   private double[][] _utilizationMatrix;
   private int _numSnapshotWindows;
   private double _monitoredPartitionsPercentage;
+  private int _numUnbalancedDisk;
+  private double _diskUtilizationStDev;
 
   /**
    * Constructor for analysis stats.
@@ -43,6 +47,8 @@ public class ClusterModelStats {
     _numTopics = 0;
     _numBrokersUnderPotentialNwOut = 0;
     _numBalancedBrokersByResource = new HashMap<>();
+    _numUnbalancedDisk = 0;
+    _diskUtilizationStDev = 0;
   }
 
   /**
@@ -63,6 +69,7 @@ public class ClusterModelStats {
     _utilizationMatrix = clusterModel.utilizationMatrix();
     _numSnapshotWindows = clusterModel.load().numWindows();
     _monitoredPartitionsPercentage = clusterModel.monitoredPartitionsPercentage();
+    numForDisks(clusterModel, balancingConstraint);
     return this;
   }
 
@@ -149,6 +156,20 @@ public class ClusterModelStats {
    */
   public int numSnapshotWindows() {
     return _numSnapshotWindows;
+  }
+
+  /**
+   * Get the number of unbalanced disk in this cluster model;
+   */
+  public int numUnbalancedDisk() {
+    return _numUnbalancedDisk;
+  }
+
+  /**
+   * Get the standard deviation of disk utilization of this cluster model;
+   */
+  public double diskUtilizationStandardDeviation() {
+    return _diskUtilizationStDev;
   }
 
   /*
@@ -362,5 +383,34 @@ public class ClusterModelStats {
 
     _topicReplicaStats.put(Statistic.AVG, _topicReplicaStats.get(Statistic.AVG).doubleValue() / _numTopics);
     _topicReplicaStats.put(Statistic.ST_DEV, _topicReplicaStats.get(Statistic.ST_DEV).doubleValue() / _numTopics);
+  }
+
+  /**
+   * Generate statistics for disks in the given cluster.
+   *
+   * @param clusterModel The state of the cluster.
+   * @param balancingConstraint Balancing constraint.
+   */
+  private void numForDisks(ClusterModel clusterModel, BalancingConstraint balancingConstraint) {
+    double totalDiskUtilizationVariance = 0;
+    int diskCount = 0;
+    for (Broker broker : clusterModel.aliveBrokers()) {
+      double brokerDiskUtilization = averageDiskUtilizationPercentage(broker);
+      double upperLimit = brokerDiskUtilization * balancingConstraint.resourceBalancePercentage(Resource.DISK);
+      double lowerLimit = brokerDiskUtilization * Math.max(0, (2 - balancingConstraint.resourceBalancePercentage(Resource.DISK)));
+      for (Disk disk : broker.disk()) {
+        if (disk.state() == Disk.State.DEAD) {
+          continue;
+        }
+        if (diskUtilizationPercentage(disk) > upperLimit || diskUtilizationPercentage(disk) < lowerLimit) {
+          _numUnbalancedDisk++;
+        }
+        totalDiskUtilizationVariance += Math.pow(diskUtilizationPercentage(disk) - brokerDiskUtilization, 2);
+        diskCount++;
+      }
+    }
+    if (diskCount > 0) {
+      _diskUtilizationStDev = Math.sqrt(totalDiskUtilizationVariance) / diskCount;
+    }
   }
 }

@@ -90,7 +90,7 @@ public class Broker implements Serializable, Comparable<Broker> {
 
     _diskByLogdir = new HashMap<>();
     if (diskCapacityByLogDir != null) {
-      diskCapacityByLogDir.forEach((key, value) -> _diskByLogdir.put(key, new Disk(key, value)));
+      diskCapacityByLogDir.forEach((key, value) -> _diskByLogdir.put(key, new Disk(key, this, value)));
       }
 
     _replicas = new HashSet<>();
@@ -324,6 +324,8 @@ public class Broker implements Serializable, Comparable<Broker> {
     _state = newState;
     if (!isAlive()) {
       _currentOfflineReplicas.addAll(replicas());
+      _diskByLogdir.values().forEach(d -> d.setState(Disk.State.DEAD));
+      Resource.cachedValues().forEach(r -> _brokerCapacity[r.id()] =  DEAD_BROKER_CAPACITY);
     }
   }
 
@@ -469,6 +471,34 @@ public class Broker implements Serializable, Comparable<Broker> {
   }
 
   /**
+   * Move replica between the disks of the broker.
+   *
+   * @param tp                Topic partition of the replica to be moved.
+   * @param sourceLogdir      Log directory of the source disk.
+   * @param destinationLogdir Log directory of the destination disk.
+   */
+  void moveReplicaBetweenDisk(TopicPartition tp, String sourceLogdir, String destinationLogdir) {
+    Replica replica = replica(tp);
+    _diskByLogdir.get(sourceLogdir).removeReplica(replica);
+    _diskByLogdir.get(destinationLogdir).addReplica(replica, false);
+  }
+
+  /**
+   * Set the disk state to dead.
+   *
+   * @param logdir Log directory of the disk.
+   * @return Disk capacity due to disk death.
+   */
+  double markDiskDead(String logdir) {
+    Disk disk = _diskByLogdir.get(logdir);
+    double diskCapacity = disk.capacity();
+    _brokerCapacity[Resource.DISK.id()] -= diskCapacity;
+    disk.setState(Disk.State.DEAD);
+    disk.replicas().forEach(Replica::markOriginalOffline);
+    return diskCapacity;
+  }
+
+  /**
    * Clear the content of monitoring data at each replica in the broker.
    */
   void clearLoad() {
@@ -513,7 +543,7 @@ public class Broker implements Serializable, Comparable<Broker> {
    */
   public void populateDiskInfo(String logdir, Map<TopicPartition, DescribeLogDirsResponse.ReplicaInfo> replicaInfos) {
     Disk disk = disk(logdir);
-    replicaInfos.forEach((key, value) -> disk.addReplicas(replica(key)));
+    replicaInfos.forEach((key, value) -> disk.addReplica(replica(key), true));
   }
 
   /**
@@ -524,6 +554,15 @@ public class Broker implements Serializable, Comparable<Broker> {
    */
   public Disk disk(String logdir) {
     return _diskByLogdir.get(logdir);
+  }
+
+  /**
+   * Get all the disks of the broker.
+   *
+   * @return Collection of disk.
+   */
+  public Collection<Disk> disk() {
+    return _diskByLogdir.values();
   }
 
   /*

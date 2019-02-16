@@ -37,6 +37,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static com.linkedin.kafka.cruisecontrol.servlet.response.CruiseControlState.SubState.EXECUTOR;
+import static com.linkedin.kafka.cruisecontrol.model.ClusterModel.ReplicaPlacementInfo;
 
 
 /**
@@ -224,8 +225,8 @@ public class GoalViolationDetector implements Runnable {
       LOG.info("Skipping goal violation detection because the cluster model does not have any topic.");
       return false;
     }
-    Map<TopicPartition, List<Integer>> initReplicaDistribution = clusterModel.getReplicaDistribution();
-    Map<TopicPartition, Integer> initLeaderDistribution = clusterModel.getLeaderDistribution();
+    Map<TopicPartition, List<ReplicaPlacementInfo>> initReplicaDistribution = clusterModel.getReplicaDistribution();
+    Map<TopicPartition, ReplicaPlacementInfo> initLeaderDistribution = clusterModel.getLeaderDistribution();
     try {
       goal.optimize(clusterModel, new HashSet<>(), new OptimizationOptions(excludedTopics(clusterModel),
                                                                            excludedBrokersForLeadership,

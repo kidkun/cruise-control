@@ -17,6 +17,7 @@ import com.linkedin.kafka.cruisecontrol.exception.OptimizationFailureException;
 import com.linkedin.kafka.cruisecontrol.model.Broker;
 import com.linkedin.kafka.cruisecontrol.model.ClusterModel;
 import com.linkedin.kafka.cruisecontrol.model.ClusterModelStats;
+import com.linkedin.kafka.cruisecontrol.model.Disk;
 import com.linkedin.kafka.cruisecontrol.model.Replica;
 
 import java.util.List;
@@ -200,7 +201,7 @@ public abstract class AbstractGoal implements Goal {
    * @param action          Balancing action.
    * @param optimizedGoals  Optimized goals.
    * @param optimizationOptions Options to take into account during optimization -- e.g. excluded brokers for leadership.
-   * @return Broker id of the destination if the movement attempt succeeds, null otherwise.
+   * @return Destination broker if the movement attempt succeeds, null otherwise.
    */
   protected Broker maybeApplyBalancingAction(ClusterModel clusterModel,
                                              Replica replica,
@@ -255,7 +256,7 @@ public abstract class AbstractGoal implements Goal {
    * @param sourceReplica Replica to be swapped with.
    * @param cb Candidate broker containing candidate replicas to swap with the source replica in the order of attempts to swap.
    * @param optimizedGoals Optimized goals.
-   * @return True the swapped in replica if succeeded, null otherwise.
+   * @return The swapped in replica if succeeded, null otherwise.
    */
   Replica maybeApplySwapAction(ClusterModel clusterModel,
                                Replica sourceReplica,
@@ -304,6 +305,111 @@ public abstract class AbstractGoal implements Goal {
       } else if (acceptance == BROKER_REJECT) {
         // Unable to swap the given source replica with any replicas in the destination broker.
         return null;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Attempt to move replica between disks of the same broker. The application considers the candidate disks as the potential
+   * destination disk for replica movement. If the movement attempt succeeds, the function returns the destination disk,
+   * otherwise the function returns null.
+   *
+   * @param clusterModel    The state of the cluster.
+   * @param replica         Replica to be moved.
+   * @param candidateDisks  Candidate disks as the potential destination for replica movement.
+   * @param optimizedGoals  Optimized goals.
+   * @return The destination disk if the movement attempt succeeds, null otherwise.
+   */
+  protected Disk maybeMoveReplicaBetweenDisk(ClusterModel clusterModel,
+                                             Replica replica,
+                                             Collection<Disk> candidateDisks,
+                                             Set<Goal> optimizedGoals) {
+    for (Disk disk : candidateDisks) {
+      BalancingAction proposal = new BalancingAction(replica.topicPartition(),
+                                                     replica.broker().id(),
+                                                     replica.disk().logDir(),
+                                                     disk.broker().id(),
+                                                     disk.logDir(),
+                                                     ActionType.REPLICA_MOVEMENT,
+                                                     null);
+      if (!legitMove(replica, disk.broker(), disk, clusterModel, ActionType.REPLICA_MOVEMENT)) {
+        LOG.trace("Replica move is not legit for {}.", proposal);
+        continue;
+      }
+
+      if (!selfSatisfied(clusterModel, proposal)) {
+        LOG.trace("Unable to self-satisfy proposal {}.", proposal);
+        continue;
+      }
+
+      ActionAcceptance acceptance = AnalyzerUtils.isProposalAcceptableForOptimizedGoals(optimizedGoals, proposal, clusterModel);
+      LOG.trace("Trying to apply legit and self-satisfied action {}, actionAcceptance = {}", proposal, acceptance);
+      if (acceptance == ACCEPT) {
+        clusterModel.relocateReplica(replica.topicPartition(), replica.broker().id(), replica.disk().logDir(),
+                                     disk.broker().id(), disk.logDir());
+        return disk;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Attempt to swap replicas on different disks of the same broker. The function returns the swapped in replica if succeeded,
+   * null otherwise.
+   *
+   * @param clusterModel The state of the cluster.
+   * @param sourceReplica Replica to be swapped with.
+   * @param candidateReplicas Candidate replicas to swap with the source replica in the order of attempts to swap.
+   * @param optimizedGoals Optimized goals.
+   * @param excludedTopics The topics that should be excluded from the optimization proposals.
+   * @return The swapped in replica if succeeded, null otherwise.
+   */
+  Replica maybeSwapReplicaBetweenDisk(ClusterModel clusterModel,
+                                      Replica sourceReplica,
+                                      List<Replica> candidateReplicas,
+                                      Set<Goal> optimizedGoals,
+                                      Set<String> excludedTopics) {
+    for (Replica destinationReplica : candidateReplicas) {
+      if (excludedTopics.contains(destinationReplica.topicPartition().topic())) {
+        continue;
+      }
+      BalancingAction swapProposal = new BalancingAction(sourceReplica.topicPartition(),
+                                                         sourceReplica.broker().id(),
+                                                         sourceReplica.disk().logDir(),
+                                                         destinationReplica.broker().id(),
+                                                         destinationReplica.disk().logDir(),
+                                                         ActionType.REPLICA_SWAP,
+                                                         destinationReplica.topicPartition());
+      // A sourceReplica should be swapped with a destinationReplica if:
+      // 0. The swap from source to destination is legit.
+      // 1. The swap from destination to source is legit.
+      // 2. The goal requirements are not violated if this action is applied to the given cluster state.
+      // 3. The movement is acceptable by the previously optimized goals.
+      if (!legitMove(sourceReplica, destinationReplica.broker(), destinationReplica.disk(), clusterModel, ActionType.REPLICA_MOVEMENT)) {
+        LOG.trace("Swap from source to destination is not legit for {}.", swapProposal);
+        return null;
+      }
+
+      if (!legitMove(destinationReplica, sourceReplica.broker(), sourceReplica.disk(), clusterModel, ActionType.REPLICA_MOVEMENT)) {
+        LOG.trace("Swap from destination to source is not legit for {}.", swapProposal);
+        continue;
+      }
+
+      if (!selfSatisfied(clusterModel, swapProposal)) {
+        // Unable to satisfy proposal for this eligible replica and the remaining eligible replicas in the list.
+        LOG.trace("Unable to self-satisfy swap proposal {}.", swapProposal);
+        return null;
+      }
+
+      ActionAcceptance acceptance = AnalyzerUtils.isProposalAcceptableForOptimizedGoals(optimizedGoals, swapProposal, clusterModel);
+      LOG.trace("Trying to apply legit and self-satisfied swap {}, actionAcceptance = {}.", swapProposal, acceptance);
+      if (acceptance == ACCEPT) {
+        clusterModel.relocateReplica(sourceReplica.topicPartition(), sourceReplica.broker().id(), sourceReplica.disk().logDir(),
+                                     destinationReplica.broker().id(), destinationReplica.disk().logDir());
+        clusterModel.relocateReplica(destinationReplica.topicPartition(), destinationReplica.broker().id(), destinationReplica.disk().logDir(),
+                                     sourceReplica.broker().id(), sourceReplica.disk().logDir());
+        return destinationReplica;
       }
     }
     return null;

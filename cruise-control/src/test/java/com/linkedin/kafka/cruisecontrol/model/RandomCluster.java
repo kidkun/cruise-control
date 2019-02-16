@@ -47,8 +47,13 @@ public class RandomCluster {
     int numRacks = clusterProperties.get(ClusterProperty.NUM_RACKS).intValue();
     int numBrokers = clusterProperties.get(ClusterProperty.NUM_BROKERS).intValue();
     BrokerCapacityConfigFileResolver configFileResolver = new BrokerCapacityConfigFileResolver();
-    configFileResolver.configure(Collections.singletonMap(BrokerCapacityConfigFileResolver.CAPACITY_CONFIG_FILE,
-                                                          RandomCluster.class.getClassLoader().getResource("DefaultCapacityConfig.json").getFile()));
+    if (clusterProperties.get(ClusterProperty.POPULATE_DISKS).intValue() > 0) {
+      configFileResolver.configure(Collections.singletonMap(BrokerCapacityConfigFileResolver.CAPACITY_CONFIG_FILE,
+                                   RandomCluster.class.getClassLoader().getResource("testCapacityConfigJBOD.json").getFile()));
+    } else {
+      configFileResolver.configure(Collections.singletonMap(BrokerCapacityConfigFileResolver.CAPACITY_CONFIG_FILE,
+                                   RandomCluster.class.getClassLoader().getResource("DefaultCapacityConfig.json").getFile()));
+    }
 
     if (numRacks > numBrokers || numBrokers <= 0 || numRacks <= 0) {
       throw new IllegalArgumentException("Random cluster generation failed due to bad input.");
@@ -106,6 +111,7 @@ public class RandomCluster {
     int numBrokers = cluster.brokers().size();
     int numDeadBrokers = properties.get(ClusterProperty.NUM_DEAD_BROKERS).intValue();
     int numBrokersWithBadDisk = properties.get(ClusterProperty.NUM_BROKERS_WITH_BAD_DISK).intValue();
+    boolean populateDisk = properties.get(ClusterProperty.POPULATE_DISKS).intValue() > 0;
     if (numDeadBrokers < 0 ||
         numBrokersWithBadDisk < 0 ||
         numBrokers < numDeadBrokers + numBrokersWithBadDisk ||
@@ -289,8 +295,28 @@ public class RandomCluster {
         }
       }
     }
+    // Uniform-randomly assign replicas to disks if needed.
+    if (populateDisk) {
+      for (Broker broker : cluster.brokers()) {
+        int diskConflictResolver = 0;
+        replicaIndex = 0;
+        List<Disk> disks = new ArrayList<>(broker.disk());
+        for (Replica replica : broker.replicas()) {
+          int assignment = uniformlyRandom(0, disks.size() - 1,
+                                           TestConstants.REPLICA_ASSIGNMENT_SEED + replicaIndex);
+          while (disks.get(assignment).capacity() < disks.get(assignment).load() + replica.load().expectedUtilizationFor(Resource.DISK)) {
+            diskConflictResolver++;
+            assignment = uniformlyRandom(0, disks.size() - 1,
+                                         TestConstants.REPLICA_ASSIGNMENT_SEED + replicaIndex + diskConflictResolver);
+          }
+          disks.get(assignment).addReplica(replica, true);
+          replicaIndex++;
+        }
+      }
+    }
+
     // Mark dead brokers and brokers with bad disk
-    markBrokenBrokers(cluster, numDeadBrokers, numBrokersWithBadDisk, excludedTopics, leaderInFirstPosition);
+    markBrokenBrokers(cluster, numDeadBrokers, numBrokersWithBadDisk, excludedTopics, leaderInFirstPosition, populateDisk);
   }
 
   /**
@@ -305,12 +331,14 @@ public class RandomCluster {
    * @param numBrokersWithBadDisk Number of brokers with bad disk.
    * @param excludedTopics Excluded topics.
    * @param leaderInFirstPosition Leader of each partition is in the first position or not.
+   * @param populateDisk Whether populate disk information for cluster or not.
    */
   private static void markBrokenBrokers(ClusterModel cluster,
                                         int numDeadBrokers,
                                         int numBrokersWithBadDisk,
                                         Set<String> excludedTopics,
-                                        boolean leaderInFirstPosition) {
+                                        boolean leaderInFirstPosition,
+                                        boolean populateDisk) {
     // Mark dead brokers
     if (numDeadBrokers > 0) {
       int markedBrokersContainingExcludedTopicReplicas = 0;
@@ -347,6 +375,22 @@ public class RandomCluster {
     }
     // Mark brokers with bad disk
     if (numBrokersWithBadDisk > 0) {
+      // If cluster has disk information, mark one (random) disk of broker as dead.
+      if (populateDisk) {
+        int remainingBrokerWithBadDiskIndex = 0;
+        for (Broker brokerToMark : cluster.brokers()) {
+          if (numBrokersWithBadDisk  == remainingBrokerWithBadDiskIndex) {
+            break;
+          }
+          if (brokerToMark.isAlive()) {
+            cluster.markDiskDead(brokerToMark.id(), brokerToMark.disk().iterator().next().logDir());
+            cluster.setBrokerState(brokerToMark.id(), Broker.State.BAD_DISKS);
+            remainingBrokerWithBadDiskIndex++;
+          }
+        }
+        return;
+      }
+
       int markedBrokersContainingExcludedTopicReplicas = 0;
 
       // Find the brokers with high priority to mark as broker with bad disk (if any). These brokers are sorted by their id.

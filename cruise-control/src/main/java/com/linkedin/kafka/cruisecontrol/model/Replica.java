@@ -39,6 +39,8 @@ public class Replica implements Serializable, Comparable<Replica> {
   private boolean _isOriginalOffline;
   private Broker _broker;
   private boolean _isLeader;
+  private Disk _originalDisk;
+  private Disk _currentDisk;
 
   /**
    * The constructor for an online replica.
@@ -138,6 +140,38 @@ public class Replica implements Serializable, Comparable<Replica> {
    */
   void setBroker(Broker broker) {
     _broker = broker;
+  }
+
+  /**
+   * Set disk that the replica resides in.
+   *
+   * @param disk Disk that the replica resides in.
+   */
+  void setDisk(Disk disk) {
+    _currentDisk = disk;
+  }
+
+  /**
+   * Set disk that the replica originally resides in.
+   *
+   * @param originalDisk Disk that the replica originally resides in.
+   */
+  void setOriginalDisk(Disk originalDisk) {
+    _originalDisk = originalDisk;
+  }
+
+  /**
+   * Get disk that the replica originally resides in.
+   */
+  public Disk originalDisk() {
+    return _originalDisk;
+  }
+
+  /**
+   * Get disk that the replica resides in.
+   */
+  public Disk disk() {
+    return _currentDisk;
   }
 
   /**
