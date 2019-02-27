@@ -17,49 +17,64 @@ import java.util.Map;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
+import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.common.Cluster;
+import org.apache.kafka.common.KafkaFuture;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.TopicPartitionReplica;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static com.linkedin.kafka.cruisecontrol.executor.ExecutionTask.TaskType.REPLICA_ACTION;
-import static com.linkedin.kafka.cruisecontrol.executor.ExecutionTask.TaskType.LEADER_ACTION;
+import static com.linkedin.kafka.cruisecontrol.executor.ExecutionTask.TaskType.*;
+import static org.apache.kafka.clients.admin.DescribeReplicaLogDirsResult.ReplicaLogDirInfo;
+import static com.linkedin.kafka.cruisecontrol.model.ClusterModel.ReplicaPlacementInfo;
 
 
 /**
  * The class holds the execution of balance proposals for rebalance.
  * <p>
- * Each proposal is assigned an execution id and managed in two ways.
+ * Each proposal is processed and generate zero or one leadership movement task, inter-broker partition movement or intra-broker
+ * partition movement task. Each task is assigned an execution id and managed in two ways.
  * <ul>
- * <li>All proposals of leadership movements are put into the same list and will be executed together.
- * <li>Proposals of partition movements are tracked by broker and execution Id.
+ * <li>All leadership movement tasks are put into the same list and will be executed together.
+ * <li>Partition movements tasks are tracked by broker and execution Id.
  * </ul>
  * <p>
- * This class tracks the execution proposals for each broker using a sorted Set. The proposal's position in this set
- * represents its execution order and is determined by the passed in {@link ReplicaMovementStrategy} or
- * {@link #_defaultReplicaMovementTaskStrategy}. The proposal is tracked both under source broker and
- * destination broker's plan. Once a proposal is fulfilled, the proposal will be removed from both source broker and destination
- * broker's execution plan.
+ * This class tracks the partition movements for each broker using a sorted Set.
+ * The task's position in this set represents its execution order. For inter-broker partition movement task, the position
+ * is determined by the passed in {@link ReplicaMovementStrategy} or {@link ExecutionTaskPlanner#_defaultReplicaMovementTaskStrategy}.
+ * For intra-broker partition movement task, the position is determined by assigned execution id.
+ * The task is tracked both under source broker and destination broker's plan.
+ * Once a task is fulfilled, the task will be removed from both source broker and destination broker's execution plan.
  * <p>
  * This class is not thread safe.
  */
 public class ExecutionTaskPlanner {
   private final Logger LOG = LoggerFactory.getLogger(ExecutionTaskPlanner.class);
-  private Map<Integer, SortedSet<ExecutionTask>> _partMoveTaskByBrokerId;
-  private long _remainingDataToMove;
-  private final Set<ExecutionTask> _remainingReplicaMovements;
+  private Map<Integer, SortedSet<ExecutionTask>> _interPartMoveTaskByBrokerId;
+  private Map<Integer, SortedSet<ExecutionTask>> _intraPartMoveTaskByBrokerId;
+  private final Set<ExecutionTask> _remainingInterBrokerReplicaMovements;
+  private final Set<ExecutionTask> _remainingIntraBrokerReplicaMovements;
   private final Map<Long, ExecutionTask> _remainingLeadershipMovements;
   private long _executionId;
   private ReplicaMovementStrategy _defaultReplicaMovementTaskStrategy;
+  private final AdminClient _adminClient;
+  private final long LOGDIR_RESPONSE_TIMEOUT_MS = 1000L;
 
-  public ExecutionTaskPlanner(List<String> defaultReplicaMovementStrategies) {
+  public ExecutionTaskPlanner(AdminClient adminClient, List<String> defaultReplicaMovementStrategies) {
     _executionId = 0L;
-    _partMoveTaskByBrokerId = new HashMap<>();
-    _remainingReplicaMovements = new TreeSet<>();
-    _remainingDataToMove = 0L;
+    _interPartMoveTaskByBrokerId = new HashMap<>();
+    _intraPartMoveTaskByBrokerId = new HashMap<>();
+    _remainingInterBrokerReplicaMovements = new HashSet<>();
+    _remainingIntraBrokerReplicaMovements = new HashSet<>();
     _remainingLeadershipMovements = new HashMap<>();
+    _adminClient = adminClient;
     if (defaultReplicaMovementStrategies == null || defaultReplicaMovementStrategies.isEmpty()) {
       _defaultReplicaMovementTaskStrategy = new BaseReplicaMovementStrategy();
     } else {
@@ -84,8 +99,9 @@ public class ExecutionTaskPlanner {
   /**
    * Add each given proposal to execute, unless the given cluster state indicates that the proposal would be a no-op.
    * A proposal is a no-op if the expected state after the execution of the given proposal is the current cluster state.
-   * The proposal to be added will have at least one of the two following actions:
-   * 1. Replica action (i.e. movement, addition, deletion or order change).
+   * The proposal to be added will have at least one of the three following actions:
+   * 1. Inter-broker replica action (i.e. movement, addition, deletion or order change).
+   * 2. Intra-broker replica action (i.e. movement).
    * 2. Leader action (i.e. leadership movement)
    *
    * @param proposals Execution proposals.
@@ -96,20 +112,22 @@ public class ExecutionTaskPlanner {
                                     Cluster cluster,
                                     ReplicaMovementStrategy replicaMovementStrategy) {
     LOG.trace("Cluster state before adding proposals: {}.", cluster);
-    maybeAddReplicaMovementTasks(proposals, cluster, replicaMovementStrategy);
+    maybeAddInterBrokerReplicaMovementTasks(proposals, cluster, replicaMovementStrategy);
+    maybeAddIntraBrokerReplicaMovementTasks(proposals);
     maybeAddLeaderChangeTasks(proposals, cluster);
   }
 
   /**
-   * For each proposal, create a replica action task if there is a need for moving replica(s) to reach expected final proposal state.
+   * For each proposal, create a replica action task if there is a need for moving replica(s) between brokers to reach
+   * expected final proposal state.
    *
    * @param proposals Execution proposals.
    * @param cluster Kafka cluster state.
    * @param replicaMovementStrategy The strategy used to determine the execution order of generated replica movement tasks.
    */
-  private void maybeAddReplicaMovementTasks(Collection<ExecutionProposal> proposals,
-                                            Cluster cluster,
-                                            ReplicaMovementStrategy replicaMovementStrategy) {
+  private void maybeAddInterBrokerReplicaMovementTasks(Collection<ExecutionProposal> proposals,
+                                                       Cluster cluster,
+                                                       ReplicaMovementStrategy replicaMovementStrategy) {
     for (ExecutionProposal proposal : proposals) {
       TopicPartition tp = proposal.topicPartition();
       PartitionInfo partitionInfo = cluster.partition(tp);
@@ -117,18 +135,59 @@ public class ExecutionTaskPlanner {
         LOG.trace("Ignored the attempt to move non-existing partition for topic partition: {}", tp);
         continue;
       }
-      if (!proposal.isCompletedSuccessfully(partitionInfo.replicas())) {
+      if (!proposal.isInterBrokerMovementCompleted(partitionInfo.replicas())) {
         long replicaActionExecutionId = _executionId++;
-        ExecutionTask executionTask = new ExecutionTask(replicaActionExecutionId, proposal, REPLICA_ACTION);
-        _remainingReplicaMovements.add(executionTask);
-        _remainingDataToMove += proposal.dataToMoveInMB();
+        ExecutionTask executionTask = new ExecutionTask(replicaActionExecutionId, proposal, INTER_BROKER_REPLICA_ACTION);
+        _remainingInterBrokerReplicaMovements.add(executionTask);
         LOG.trace("Added action {} as replica proposal {}", replicaActionExecutionId, proposal);
       }
     }
     if (replicaMovementStrategy == null) {
-      _partMoveTaskByBrokerId = _defaultReplicaMovementTaskStrategy.applyStrategy(_remainingReplicaMovements, cluster);
+      _interPartMoveTaskByBrokerId = _defaultReplicaMovementTaskStrategy.applyStrategy(_remainingInterBrokerReplicaMovements,
+                                                                                       cluster);
     } else {
-      _partMoveTaskByBrokerId = replicaMovementStrategy.applyStrategy(_remainingReplicaMovements, cluster);
+      _interPartMoveTaskByBrokerId = replicaMovementStrategy.applyStrategy(_remainingInterBrokerReplicaMovements, cluster);
+    }
+  }
+
+  /**
+   * For each proposal, create a replica action task if there is a need for moving replica(s) between disks to reach
+   * expected final proposal state.
+   *
+   * @param proposals Execution proposals.
+   */
+  private void maybeAddIntraBrokerReplicaMovementTasks(Collection<ExecutionProposal> proposals) {
+    Set<TopicPartitionReplica> replicasToCheckLogdir = new HashSet<>();
+    for (ExecutionProposal proposal : proposals) {
+      proposal.replicasToMoveByBroker().keySet().forEach(broker ->
+        replicasToCheckLogdir.add(new TopicPartitionReplica(proposal.topic(), proposal.partitionId(), broker)));
+    }
+
+    if (!replicasToCheckLogdir.isEmpty()) {
+      Map<TopicPartitionReplica, String> currentLogdirByReplica = new HashMap<>(replicasToCheckLogdir.size());
+      Map<TopicPartitionReplica, KafkaFuture<ReplicaLogDirInfo>> logDirsByReplicas =
+          _adminClient.describeReplicaLogDirs(replicasToCheckLogdir).values();
+      for (Map.Entry<TopicPartitionReplica, KafkaFuture<ReplicaLogDirInfo>> entry : logDirsByReplicas.entrySet()) {
+        try {
+          ReplicaLogDirInfo info = entry.getValue().get(LOGDIR_RESPONSE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+          currentLogdirByReplica.put(entry.getKey(), info.getCurrentReplicaLogDir());
+        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+          LOG.warn("Encounter exception {} when fetching logdir information for replica {}.", e.getMessage(), entry.getKey());
+        }
+      }
+
+      for (ExecutionProposal proposal : proposals) {
+        proposal.replicasToMoveByBroker().values().forEach(r -> {
+          String currentLogdir = currentLogdirByReplica.get(new TopicPartitionReplica(proposal.topic(), proposal.partitionId(), r.brokerId()));
+          if (currentLogdir != null && !currentLogdir.equals(r.logdir())) {
+            long replicaActionExecutionId = _executionId++;
+            ExecutionTask task = new ExecutionTask(replicaActionExecutionId, proposal, r.brokerId(), INTRA_BROKER_REPLICA_ACTION);
+            _intraPartMoveTaskByBrokerId.putIfAbsent(r.brokerId(), new TreeSet<>());
+            _intraPartMoveTaskByBrokerId.get(r.brokerId()).add(task);
+            _remainingIntraBrokerReplicaMovements.add(task);
+          }
+        });
+      }
     }
   }
 
@@ -142,7 +201,7 @@ public class ExecutionTaskPlanner {
     for (ExecutionProposal proposal : proposals) {
       if (proposal.hasLeaderAction()) {
         Node currentLeader = cluster.leaderFor(proposal.topicPartition());
-        if (currentLeader != null && currentLeader.id() != proposal.newLeader()) {
+        if (currentLeader != null && currentLeader.id() != proposal.newLeader().brokerId()) {
           // Get the execution Id for the leader action proposal execution;
           long leaderActionExecutionId = _executionId++;
           ExecutionTask leaderActionTask = new ExecutionTask(leaderActionExecutionId, proposal, LEADER_ACTION);
@@ -154,17 +213,17 @@ public class ExecutionTaskPlanner {
   }
 
   /**
-   * Get the remaining replica movement tasks.
+   * Get the remaining inter-broker replica movement tasks.
    */
-  public Set<ExecutionTask> remainingReplicaMovements() {
-    return _remainingReplicaMovements;
+  public Set<ExecutionTask> remainingInterBrokerReplicaMovements() {
+    return _remainingInterBrokerReplicaMovements;
   }
 
   /**
-   * Get the remaining data to move in MB.
+   * Get the remaining intra-broker replica movement tasks.
    */
-  public long remainingDataToMoveInMB() {
-    return _remainingDataToMove;
+  public Set<ExecutionTask> remainingIntraBrokerReplicaMovements() {
+    return _remainingIntraBrokerReplicaMovements;
   }
 
   /**
@@ -191,7 +250,7 @@ public class ExecutionTaskPlanner {
   }
 
   /**
-   * Get a list of executable replica movements that comply with the concurrency constraint.
+   * Get a list of executable inter-broker replica movements that comply with the concurrency constraint.
    *
    * @param readyBrokers The brokers that is ready to execute more movements.
    * @param inProgressPartitions Topic partitions of replicas that are already in progress. This is needed because the
@@ -199,9 +258,9 @@ public class ExecutionTaskPlanner {
    *                             whose replica is being reassigned.
    * @return A list of movements that is executable for the ready brokers.
    */
-  public List<ExecutionTask> getReplicaMovementTasks(Map<Integer, Integer> readyBrokers,
-                                                       Set<TopicPartition> inProgressPartitions) {
-    LOG.trace("Getting tasks for brokers with concurrency {}", readyBrokers);
+  public List<ExecutionTask> getInterBrokerReplicaMovementTasks(Map<Integer, Integer> readyBrokers,
+                                                                Set<TopicPartition> inProgressPartitions) {
+    LOG.trace("Getting inter-broker replica movement tasks for brokers with concurrency {}", readyBrokers);
     List<ExecutionTask> executableReplicaMovements = new ArrayList<>();
     /**
      * The algorithm avoids unfair situation where the available movement slots of a broker is completely taken
@@ -222,14 +281,15 @@ public class ExecutionTaskPlanner {
         }
 
         // Check the available balancing proposals of this broker to see if we can find one ready to execute.
-        SortedSet<ExecutionTask> proposalsForBroker = _partMoveTaskByBrokerId.get(brokerId);
+        SortedSet<ExecutionTask> proposalsForBroker = _interPartMoveTaskByBrokerId.get(brokerId);
         LOG.trace("Execution task for broker {} are {}", brokerId, proposalsForBroker);
         if (proposalsForBroker != null) {
           for (ExecutionTask task : proposalsForBroker) {
             // Skip this proposal if either source broker or destination broker of this proposal has already
             // involved in this round.
-            int sourceBroker = task.proposal().oldLeader();
-            Set<Integer> destinationBrokers = task.proposal().replicasToAdd();
+            int sourceBroker = task.proposal().oldLeader().brokerId();
+            Set<Integer> destinationBrokers = task.proposal().replicasToAdd().stream().mapToInt(ReplicaPlacementInfo::brokerId)
+                                                  .boxed().collect(Collectors.toSet());
             if (brokerInvolved.contains(sourceBroker)
                 || KafkaCruiseControlUtils.containsAny(brokerInvolved, destinationBrokers)) {
               continue;
@@ -245,7 +305,7 @@ public class ExecutionTaskPlanner {
               brokerInvolved.add(sourceBroker);
               brokerInvolved.addAll(destinationBrokers);
               // Remove the proposal from the execution plan.
-              removeReplicaActionForExecution(task);
+              removeInterBrokerReplicaActionForExecution(task);
               // Decrement the slots for both source and destination brokers
               readyBrokers.put(sourceBroker, readyBrokers.get(sourceBroker) - 1);
               for (int broker : destinationBrokers) {
@@ -265,13 +325,41 @@ public class ExecutionTaskPlanner {
   }
 
   /**
+   * Get a list of executable intra-broker replica movements that comply with the concurrency constraint.
+   *
+   * @param readyBrokers The brokers that is ready to execute more movements.
+   * @return A list of movements that is executable for the ready brokers.
+   */
+  public List<ExecutionTask> getIntraBrokerReplicaMovementTasks(Map<Integer, Integer> readyBrokers) {
+    LOG.trace("Getting intra-broker replica movement tasks for brokers with concurrency {}", readyBrokers);
+    List<ExecutionTask> executableReplicaMovements = new ArrayList<>();
+
+    for (Map.Entry<Integer, Integer> brokerEntry : readyBrokers.entrySet()) {
+        int brokerId = brokerEntry.getKey();
+        int limit = brokerEntry.getValue();
+        if (_intraPartMoveTaskByBrokerId.containsKey(brokerId)) {
+          Iterator<ExecutionTask> tasksForBroker = _intraPartMoveTaskByBrokerId.get(brokerId).iterator();
+          while (limit-- > 0 && tasksForBroker.hasNext()) {
+            ExecutionTask task =  tasksForBroker.next();
+            executableReplicaMovements.add(task);
+            // Remove the proposal from the execution plan.
+            tasksForBroker.remove();
+            _remainingIntraBrokerReplicaMovements.remove(task);
+            }
+          }
+        }
+    return executableReplicaMovements;
+  }
+
+  /**
    * Clear all the states.
    */
   public void clear() {
+    _intraPartMoveTaskByBrokerId.clear();
+    _interPartMoveTaskByBrokerId.clear();
     _remainingLeadershipMovements.clear();
-    _partMoveTaskByBrokerId.clear();
-    _remainingReplicaMovements.clear();
-    _remainingDataToMove = 0L;
+    _remainingInterBrokerReplicaMovements.clear();
+    _remainingIntraBrokerReplicaMovements.clear();
   }
 
   /**
@@ -279,25 +367,23 @@ public class ExecutionTaskPlanner {
    * execute more proposals.
    */
   private boolean isExecutableProposal(ExecutionProposal proposal, Map<Integer, Integer> readyBrokers) {
-    if (readyBrokers.get(proposal.oldLeader()) <= 0) {
+    if (readyBrokers.get(proposal.oldLeader().brokerId()) <= 0) {
       return false;
     }
-    for (int destinationBroker : proposal.replicasToAdd()) {
-      if (readyBrokers.get(destinationBroker) <= 0) {
+    for (ReplicaPlacementInfo destinationBroker : proposal.replicasToAdd()) {
+      if (readyBrokers.get(destinationBroker.brokerId()) <= 0) {
         return false;
       }
     }
     return true;
   }
 
-  private void removeReplicaActionForExecution(ExecutionTask task) {
-    int sourceBroker = task.proposal().oldLeader();
-    _partMoveTaskByBrokerId.get(sourceBroker).remove(task);
-    for (int destinationBroker : task.proposal().replicasToAdd()) {
-      _partMoveTaskByBrokerId.get(destinationBroker).remove(task);
+  private void removeInterBrokerReplicaActionForExecution(ExecutionTask task) {
+    int sourceBroker = task.proposal().oldLeader().brokerId();
+    _interPartMoveTaskByBrokerId.get(sourceBroker).remove(task);
+    for (ReplicaPlacementInfo destinationBroker : task.proposal().replicasToAdd()) {
+      _interPartMoveTaskByBrokerId.get(destinationBroker.brokerId()).remove(task);
     }
-    _remainingReplicaMovements.remove(task);
-    _remainingDataToMove -= task.proposal().dataToMoveInMB();
+    _remainingInterBrokerReplicaMovements.remove(task);
   }
-
 }

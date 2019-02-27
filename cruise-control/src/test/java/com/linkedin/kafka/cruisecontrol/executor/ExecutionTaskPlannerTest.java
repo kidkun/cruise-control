@@ -8,11 +8,16 @@ import com.linkedin.kafka.cruisecontrol.executor.strategy.BaseReplicaMovementStr
 import com.linkedin.kafka.cruisecontrol.executor.strategy.PostponeUrpReplicaMovementStrategy;
 import com.linkedin.kafka.cruisecontrol.executor.strategy.PrioritizeLargeReplicaMovementStrategy;
 import com.linkedin.kafka.cruisecontrol.executor.strategy.PrioritizeSmallReplicaMovementStrategy;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.DescribeReplicaLogDirsResult;
 import org.apache.kafka.common.Cluster;
+import org.apache.kafka.common.KafkaFuture;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
@@ -22,39 +27,49 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.kafka.common.TopicPartitionReplica;
+import org.easymock.EasyMock;
 import org.junit.Test;
 
+import static org.apache.kafka.common.KafkaFuture.completedFuture;
+import static org.easymock.EasyMock.anyObject;
 import static org.junit.Assert.assertEquals;
 import static com.linkedin.kafka.cruisecontrol.common.TestConstants.TOPIC1;
 import static com.linkedin.kafka.cruisecontrol.common.TestConstants.TOPIC2;
+import static com.linkedin.kafka.cruisecontrol.model.ClusterModel.ReplicaPlacementInfo;
+import static org.apache.kafka.clients.admin.DescribeReplicaLogDirsResult.ReplicaLogDirInfo;
 
 /**
  * Unit test class for execution task planner
  */
 public class ExecutionTaskPlannerTest {
+  private ReplicaPlacementInfo r0 = new ReplicaPlacementInfo(0);
+  private ReplicaPlacementInfo r1 = new ReplicaPlacementInfo(1);
+  private ReplicaPlacementInfo r2 = new ReplicaPlacementInfo(2);
+  private ReplicaPlacementInfo r3 = new ReplicaPlacementInfo(3);
+
   private final ExecutionProposal leaderMovement1 =
-      new ExecutionProposal(new TopicPartition(TOPIC1, 0), 0, 1, Arrays.asList(1, 0), Arrays.asList(0, 1));
+      new ExecutionProposal(new TopicPartition(TOPIC1, 0), 0, r1, Arrays.asList(r1, r0), Arrays.asList(r0, r1));
   private final ExecutionProposal leaderMovement2 =
-      new ExecutionProposal(new TopicPartition(TOPIC1, 1), 0, 1, Arrays.asList(1, 0), Arrays.asList(0, 1));
+      new ExecutionProposal(new TopicPartition(TOPIC1, 1), 0, r1, Arrays.asList(r1, r0), Arrays.asList(r0, r1));
   private final ExecutionProposal leaderMovement3 =
-      new ExecutionProposal(new TopicPartition(TOPIC1, 2), 0, 1, Arrays.asList(1, 2), Arrays.asList(2, 1));
+      new ExecutionProposal(new TopicPartition(TOPIC1, 2), 0, r1, Arrays.asList(r1, r2), Arrays.asList(r2, r1));
   private final ExecutionProposal leaderMovement4 =
-      new ExecutionProposal(new TopicPartition(TOPIC1, 3), 0, 3, Arrays.asList(3, 2), Arrays.asList(2, 3));
+      new ExecutionProposal(new TopicPartition(TOPIC1, 3), 0, r3, Arrays.asList(r3, r2), Arrays.asList(r2, r3));
 
   private final ExecutionProposal partitionMovement1 =
-      new ExecutionProposal(new TopicPartition(TOPIC2, 0), 4, 0, Arrays.asList(0, 2), Arrays.asList(2, 1));
+      new ExecutionProposal(new TopicPartition(TOPIC2, 0), 4, r0, Arrays.asList(r0, r2), Arrays.asList(r2, r1));
   private final ExecutionProposal partitionMovement2 =
-      new ExecutionProposal(new TopicPartition(TOPIC2, 1), 3, 1, Arrays.asList(1, 3), Arrays.asList(3, 2));
+      new ExecutionProposal(new TopicPartition(TOPIC2, 1), 3, r1, Arrays.asList(r1, r3), Arrays.asList(r3, r2));
   private final ExecutionProposal partitionMovement3 =
-      new ExecutionProposal(new TopicPartition(TOPIC2, 2), 2, 2, Arrays.asList(2, 1), Arrays.asList(1, 3));
+      new ExecutionProposal(new TopicPartition(TOPIC2, 2), 2, r2, Arrays.asList(r2, r1), Arrays.asList(r1, r3));
   private final ExecutionProposal partitionMovement4 =
-      new ExecutionProposal(new TopicPartition(TOPIC2, 3), 1, 3, Arrays.asList(3, 2), Arrays.asList(2, 0));
+      new ExecutionProposal(new TopicPartition(TOPIC2, 3), 1, r3, Arrays.asList(r3, r2), Arrays.asList(r2, r0));
 
-  private final List<Node> _expectedNodes = new ArrayList<>(Arrays.asList(
-      new Node(0, "null", -1),
-      new Node(1, "null", -1),
-      new Node(2, "null", -1),
-      new Node(3, "null", -1)));
+  private final List<Node> _expectedNodes = Arrays.asList(new Node(0, "null", -1),
+                                                          new Node(1, "null", -1),
+                                                          new Node(2, "null", -1),
+                                                          new Node(3, "null", -1));
 
   @Test
   public void testGetLeaderMovementTasks() {
@@ -63,7 +78,7 @@ public class ExecutionTaskPlannerTest {
     proposals.add(leaderMovement2);
     proposals.add(leaderMovement3);
     proposals.add(leaderMovement4);
-    ExecutionTaskPlanner planner = new ExecutionTaskPlanner(Collections.emptyList());
+    ExecutionTaskPlanner planner = new ExecutionTaskPlanner(null, Collections.emptyList());
 
     Set<PartitionInfo> partitions = new HashSet<>();
     for (ExecutionProposal proposal : proposals) {
@@ -92,18 +107,21 @@ public class ExecutionTaskPlannerTest {
   }
 
   @Test
-  public void testGetPartitionMovementTasks() {
+  public void testGetInterBrokerPartitionMovementTasks() {
     List<ExecutionProposal> proposals = new ArrayList<>();
     proposals.add(partitionMovement1);
     proposals.add(partitionMovement2);
     proposals.add(partitionMovement3);
     proposals.add(partitionMovement4);
     // Test different execution strategies.
-    ExecutionTaskPlanner basePlanner = new ExecutionTaskPlanner(null);
-    ExecutionTaskPlanner postponeUrpPlanner = new ExecutionTaskPlanner(Collections.singletonList(PostponeUrpReplicaMovementStrategy.class.getName()));
-    ExecutionTaskPlanner prioritizeLargeMovementPlanner = new ExecutionTaskPlanner(Arrays.asList(PrioritizeLargeReplicaMovementStrategy.class.getName(),
+    ExecutionTaskPlanner basePlanner = new ExecutionTaskPlanner(null, null);
+    ExecutionTaskPlanner postponeUrpPlanner = new ExecutionTaskPlanner(null,
+                                                                       Collections.singletonList(PostponeUrpReplicaMovementStrategy.class.getName()));
+    ExecutionTaskPlanner prioritizeLargeMovementPlanner = new ExecutionTaskPlanner(null,
+                                                                                   Arrays.asList(PrioritizeLargeReplicaMovementStrategy.class.getName(),
                                                                                                  BaseReplicaMovementStrategy.class.getName()));
-    ExecutionTaskPlanner prioritizeSmallMovementPlanner = new ExecutionTaskPlanner(Arrays.asList(PrioritizeSmallReplicaMovementStrategy.class.getName(),
+    ExecutionTaskPlanner prioritizeSmallMovementPlanner = new ExecutionTaskPlanner(null,
+                                                                                   Arrays.asList(PrioritizeSmallReplicaMovementStrategy.class.getName(),
                                                                                                  BaseReplicaMovementStrategy.class.getName()));
 
     Set<PartitionInfo> partitions = new HashSet<>();
@@ -112,11 +130,7 @@ public class ExecutionTaskPlannerTest {
     partitions.add(generatePartitionInfo(partitionMovement3, true));
     partitions.add(generatePartitionInfo(partitionMovement4, false));
 
-    Cluster expectedCluster = new Cluster(null,
-                                          _expectedNodes,
-                                          partitions,
-                                          Collections.<String>emptySet(),
-                                          Collections.<String>emptySet());
+    Cluster expectedCluster = new Cluster(null, _expectedNodes, partitions, Collections.<String>emptySet(), Collections.<String>emptySet());
 
     Map<Integer, Integer> readyBrokers = new HashMap<>();
     readyBrokers.put(0, 8);
@@ -124,25 +138,25 @@ public class ExecutionTaskPlannerTest {
     readyBrokers.put(2, 8);
     readyBrokers.put(3, 8);
     basePlanner.addExecutionProposals(proposals, expectedCluster, null);
-    List<ExecutionTask> partitionMovementTasks = basePlanner.getReplicaMovementTasks(readyBrokers, Collections.emptySet());
+    List<ExecutionTask> partitionMovementTasks = basePlanner.getInterBrokerReplicaMovementTasks(readyBrokers, Collections.emptySet());
     assertEquals("First task should be partitionMovement1", partitionMovement1, partitionMovementTasks.get(0).proposal());
     assertEquals("Second task should be partitionMovement3", partitionMovement3, partitionMovementTasks.get(1).proposal());
     assertEquals("Third task should be partitionMovement4", partitionMovement4, partitionMovementTasks.get(2).proposal());
 
     postponeUrpPlanner.addExecutionProposals(proposals, expectedCluster, null);
-    partitionMovementTasks = postponeUrpPlanner.getReplicaMovementTasks(readyBrokers, Collections.emptySet());
+    partitionMovementTasks = postponeUrpPlanner.getInterBrokerReplicaMovementTasks(readyBrokers, Collections.emptySet());
     assertEquals("First task should be partitionMovement4", partitionMovement4, partitionMovementTasks.get(0).proposal());
     assertEquals("Second task should be partitionMovement2", partitionMovement2, partitionMovementTasks.get(1).proposal());
     assertEquals("Third task should be partitionMovement1", partitionMovement1, partitionMovementTasks.get(2).proposal());
 
     prioritizeLargeMovementPlanner.addExecutionProposals(proposals, expectedCluster, null);
-    partitionMovementTasks = prioritizeLargeMovementPlanner.getReplicaMovementTasks(readyBrokers, Collections.emptySet());
+    partitionMovementTasks = prioritizeLargeMovementPlanner.getInterBrokerReplicaMovementTasks(readyBrokers, Collections.emptySet());
     assertEquals("First task should be partitionMovement1", partitionMovement1, partitionMovementTasks.get(0).proposal());
     assertEquals("Second task should be partitionMovement3", partitionMovement3, partitionMovementTasks.get(1).proposal());
     assertEquals("Third task should be partitionMovement4", partitionMovement4, partitionMovementTasks.get(2).proposal());
 
     prioritizeSmallMovementPlanner.addExecutionProposals(proposals, expectedCluster, null);
-    partitionMovementTasks = prioritizeSmallMovementPlanner.getReplicaMovementTasks(readyBrokers, Collections.emptySet());
+    partitionMovementTasks = prioritizeSmallMovementPlanner.getInterBrokerReplicaMovementTasks(readyBrokers, Collections.emptySet());
     assertEquals("First task should be partitionMovement4", partitionMovement4, partitionMovementTasks.get(0).proposal());
     assertEquals("Second task should be partitionMovement2", partitionMovement2, partitionMovementTasks.get(1).proposal());
     assertEquals("Third task should be partitionMovement1", partitionMovement1, partitionMovementTasks.get(2).proposal());
@@ -155,7 +169,7 @@ public class ExecutionTaskPlannerTest {
     proposals.add(partitionMovement2);
     proposals.add(partitionMovement3);
     proposals.add(partitionMovement4);
-    ExecutionTaskPlanner planner = new ExecutionTaskPlanner(null);
+    ExecutionTaskPlanner planner = new ExecutionTaskPlanner(null, null);
 
     Set<PartitionInfo> partitions = new HashSet<>();
     partitions.add(generatePartitionInfo(partitionMovement1, true));
@@ -163,11 +177,7 @@ public class ExecutionTaskPlannerTest {
     partitions.add(generatePartitionInfo(partitionMovement3, true));
     partitions.add(generatePartitionInfo(partitionMovement4, false));
 
-    Cluster expectedCluster = new Cluster(null,
-                                          _expectedNodes,
-                                          partitions,
-                                          Collections.<String>emptySet(),
-                                          Collections.<String>emptySet());
+    Cluster expectedCluster = new Cluster(null, _expectedNodes, partitions, Collections.<String>emptySet(), Collections.<String>emptySet());
 
     Map<Integer, Integer> readyBrokers = new HashMap<>();
     readyBrokers.put(0, 8);
@@ -175,28 +185,88 @@ public class ExecutionTaskPlannerTest {
     readyBrokers.put(2, 8);
     readyBrokers.put(3, 8);
     planner.addExecutionProposals(proposals, expectedCluster, null);
-    List<ExecutionTask> partitionMovementTasks = planner.getReplicaMovementTasks(readyBrokers, Collections.emptySet());
+    List<ExecutionTask> partitionMovementTasks = planner.getInterBrokerReplicaMovementTasks(readyBrokers, Collections.emptySet());
     assertEquals("First task should be partitionMovement1", partitionMovement1, partitionMovementTasks.get(0).proposal());
     assertEquals("Second task should be partitionMovement3", partitionMovement3, partitionMovementTasks.get(1).proposal());
     assertEquals("Third task should be partitionMovement4", partitionMovement4, partitionMovementTasks.get(2).proposal());
 
     planner.addExecutionProposals(proposals, expectedCluster, new PostponeUrpReplicaMovementStrategy());
-    partitionMovementTasks = planner.getReplicaMovementTasks(readyBrokers, Collections.emptySet());
+    partitionMovementTasks = planner.getInterBrokerReplicaMovementTasks(readyBrokers, Collections.emptySet());
     assertEquals("First task should be partitionMovement4", partitionMovement4, partitionMovementTasks.get(0).proposal());
     assertEquals("Second task should be partitionMovement2", partitionMovement2, partitionMovementTasks.get(1).proposal());
     assertEquals("Third task should be partitionMovement1", partitionMovement1, partitionMovementTasks.get(2).proposal());
 
     planner.addExecutionProposals(proposals, expectedCluster, new PrioritizeLargeReplicaMovementStrategy());
-    partitionMovementTasks = planner.getReplicaMovementTasks(readyBrokers, Collections.emptySet());
+    partitionMovementTasks = planner.getInterBrokerReplicaMovementTasks(readyBrokers, Collections.emptySet());
     assertEquals("First task should be partitionMovement1", partitionMovement1, partitionMovementTasks.get(0).proposal());
     assertEquals("Second task should be partitionMovement3", partitionMovement3, partitionMovementTasks.get(1).proposal());
     assertEquals("Third task should be partitionMovement4", partitionMovement4, partitionMovementTasks.get(2).proposal());
 
     planner.addExecutionProposals(proposals, expectedCluster, new PrioritizeSmallReplicaMovementStrategy());
-    partitionMovementTasks = planner.getReplicaMovementTasks(readyBrokers, Collections.emptySet());
+    partitionMovementTasks = planner.getInterBrokerReplicaMovementTasks(readyBrokers, Collections.emptySet());
     assertEquals("First task should be partitionMovement4", partitionMovement4, partitionMovementTasks.get(0).proposal());
     assertEquals("Second task should be partitionMovement2", partitionMovement2, partitionMovementTasks.get(1).proposal());
     assertEquals("Third task should be partitionMovement1", partitionMovement1, partitionMovementTasks.get(2).proposal());
+  }
+
+  @Test
+  public void testGetIntraBrokerPartitionMovementTasks() {
+    ReplicaPlacementInfo r0d0 = new ReplicaPlacementInfo(0, "d0");
+    ReplicaPlacementInfo r0d1 = new ReplicaPlacementInfo(0, "d1");
+    ReplicaPlacementInfo r1d0 = new ReplicaPlacementInfo(1, "d0");
+    ReplicaPlacementInfo r1d1 = new ReplicaPlacementInfo(1, "d1");
+
+    List<ExecutionProposal> proposals = Collections.singletonList(new ExecutionProposal(new TopicPartition(TOPIC2, 0),
+                                                                                        4,
+                                                                                        r0d0,
+                                                                                        Arrays.asList(r0d0, r1d1),
+                                                                                        Arrays.asList(r1d0, r0d1)));
+
+    TopicPartitionReplica tpr0 = new TopicPartitionReplica(TOPIC2, 0, 0);
+    TopicPartitionReplica tpr1 = new TopicPartitionReplica(TOPIC2, 0, 1);
+
+    //Mock adminClient
+    AdminClient mockAdminClient = EasyMock.mock(AdminClient.class);
+    try {
+      // Reflectively set constructors from package private to public.
+      Constructor<DescribeReplicaLogDirsResult> constructor1 = DescribeReplicaLogDirsResult.class.getDeclaredConstructor(Map.class);
+      constructor1.setAccessible(true);
+      Constructor<ReplicaLogDirInfo> constructor2 =
+          ReplicaLogDirInfo.class.getDeclaredConstructor(String.class, long.class, String.class, long.class);
+      constructor2.setAccessible(true);
+
+      Map<TopicPartitionReplica, KafkaFuture<ReplicaLogDirInfo>> futureByReplica = new HashMap<>();
+      futureByReplica.put(tpr0, completedFuture(constructor2.newInstance("d0", 0L, null, -1L)));
+      futureByReplica.put(tpr1, completedFuture(constructor2.newInstance("d1", 0L, null, -1L)));
+
+      EasyMock.expect(mockAdminClient.describeReplicaLogDirs(anyObject()))
+              .andReturn(constructor1.newInstance(futureByReplica))
+              .anyTimes();
+      EasyMock.replay(mockAdminClient);
+    } catch (InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException e) {
+      // Let it go.
+    }
+
+    Set<PartitionInfo> partitions = new HashSet<>();
+    Node[] isrArray = generateExpectedReplicas(proposals.get(0));
+    partitions.add(new PartitionInfo(proposals.get(0).topicPartition().topic(),
+                                     proposals.get(0).topicPartition().partition(),
+                                     isrArray[0], isrArray, isrArray));
+
+    Cluster expectedCluster = new Cluster(null,
+                                          _expectedNodes,
+                                          partitions,
+                                          Collections.<String>emptySet(),
+                                          Collections.<String>emptySet());
+
+
+    ExecutionTaskPlanner planner = new ExecutionTaskPlanner(mockAdminClient, Collections.emptyList());
+    planner.addExecutionProposals(proposals, expectedCluster, null);
+    assertEquals(1, planner.remainingLeadershipMovements().size());
+    assertEquals(2, planner.remainingIntraBrokerReplicaMovements().size());
+    planner.clear();
+    assertEquals(0, planner.remainingLeadershipMovements().size());
+    assertEquals(0, planner.remainingIntraBrokerReplicaMovements().size());
   }
 
   @Test
@@ -204,7 +274,7 @@ public class ExecutionTaskPlannerTest {
     List<ExecutionProposal> proposals = new ArrayList<>();
     proposals.add(leaderMovement1);
     proposals.add(partitionMovement1);
-    ExecutionTaskPlanner planner = new ExecutionTaskPlanner(Collections.emptyList());
+    ExecutionTaskPlanner planner = new ExecutionTaskPlanner(null, Collections.emptyList());
 
     Set<PartitionInfo> partitions = new HashSet<>();
 
@@ -218,20 +288,18 @@ public class ExecutionTaskPlannerTest {
                                           Collections.<String>emptySet());
 
     planner.addExecutionProposals(proposals, expectedCluster, null);
-    assertEquals(4, planner.remainingDataToMoveInMB());
     assertEquals(2, planner.remainingLeadershipMovements().size());
-    assertEquals(2, planner.remainingReplicaMovements().size());
+    assertEquals(2, planner.remainingInterBrokerReplicaMovements().size());
     planner.clear();
-    assertEquals(0, planner.remainingDataToMoveInMB());
     assertEquals(0, planner.remainingLeadershipMovements().size());
-    assertEquals(0, planner.remainingReplicaMovements().size());
+    assertEquals(0, planner.remainingInterBrokerReplicaMovements().size());
   }
 
   private Node[] generateExpectedReplicas(ExecutionProposal proposal) {
     int i = 0;
     Node[] expectedProposalReplicas = new Node[proposal.oldReplicas().size()];
-    for (Integer oldId: proposal.oldReplicas()) {
-      expectedProposalReplicas[i++] = new Node(oldId, "null", -1);
+    for (ReplicaPlacementInfo oldId: proposal.oldReplicas()) {
+      expectedProposalReplicas[i++] = new Node(oldId.brokerId(), "null", -1);
     }
     return expectedProposalReplicas;
   }

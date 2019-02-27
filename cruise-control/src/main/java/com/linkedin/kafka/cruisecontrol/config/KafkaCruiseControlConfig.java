@@ -424,14 +424,24 @@ public class KafkaCruiseControlConfig extends AbstractConfig {
   private static final String ZOOKEEPER_CONNECT_DOC = "The zookeeper path used by the Kafka cluster.";
 
   /**
-   * <code>num.concurrent.partition.movements</code>
+   * <code>num.concurrent.inter.broker.partition.movements.per.broker</code>
    */
-  public static final String NUM_CONCURRENT_PARTITION_MOVEMENTS_PER_BROKER_CONFIG =
-      "num.concurrent.partition.movements.per.broker";
-  private static final String NUM_CONCURRENT_PARTITION_MOVEMENTS_PER_BROKER_DOC = "The maximum number of partitions " +
+  public static final String NUM_CONCURRENT_INTER_BROKER_PARTITION_MOVEMENTS_PER_BROKER_CONFIG =
+      "num.concurrent.inter.broker.partition.movements.per.broker";
+  private static final String NUM_CONCURRENT_INTER_BROKER_PARTITION_MOVEMENTS_PER_BROKER_DOC = "The maximum number of partitions " +
       "the executor will move to or out of a broker at the same time. e.g. setting the value to 10 means that the " +
       "executor will at most allow 10 partitions move out of a broker and 10 partitions move into a broker at any " +
-      "given point. This is to avoid overwhelming the cluster by partition movements.";
+      "given point. This is to avoid overwhelming the cluster by inter-broker partition movements.";
+
+  /**
+   * <code>num.concurrent.intra.broker.partition.movements.per.broker</code>
+   */
+  public static final String NUM_CONCURRENT_INTRA_BROKER_PARTITION_MOVEMENTS_PER_BROKER_CONFIG =
+      "num.concurrent.intra.broker.partition.movements.per.broker";
+  private static final String NUM_CONCURRENT_INTRA_BROKER_PARTITION_MOVEMENTS_PER_BROKER_DOC = "The maximum number of partitions " +
+      "the executor will move across disks within a broker at the same time. e.g. setting the value to 10 means that the " +
+      "executor will at most allow 10 partitions to move cross disks within a broker at any given point. This is to avoid " +
+      "overwhelming the cluster by intra-broker partition movements.";
 
   /**
    * <code>num.concurrent.leader.movements</code>
@@ -1028,12 +1038,18 @@ public class KafkaCruiseControlConfig extends AbstractConfig {
                 ConfigDef.Importance.LOW,
                 NUM_PROPOSAL_PRECOMPUTE_THREADS_DOC)
         .define(ZOOKEEPER_CONNECT_CONFIG, ConfigDef.Type.STRING, ConfigDef.Importance.HIGH, ZOOKEEPER_CONNECT_DOC)
-        .define(NUM_CONCURRENT_PARTITION_MOVEMENTS_PER_BROKER_CONFIG,
+        .define(NUM_CONCURRENT_INTER_BROKER_PARTITION_MOVEMENTS_PER_BROKER_CONFIG,
                 ConfigDef.Type.INT,
                 5,
                 atLeast(1),
                 ConfigDef.Importance.MEDIUM,
-                NUM_CONCURRENT_PARTITION_MOVEMENTS_PER_BROKER_DOC)
+                NUM_CONCURRENT_INTER_BROKER_PARTITION_MOVEMENTS_PER_BROKER_DOC)
+        .define(NUM_CONCURRENT_INTRA_BROKER_PARTITION_MOVEMENTS_PER_BROKER_CONFIG,
+                ConfigDef.Type.INT,
+                5,
+                atLeast(1),
+                ConfigDef.Importance.MEDIUM,
+                NUM_CONCURRENT_INTRA_BROKER_PARTITION_MOVEMENTS_PER_BROKER_DOC)
         .define(NUM_CONCURRENT_LEADER_MOVEMENTS_CONFIG,
                 ConfigDef.Type.INT,
                 1000,

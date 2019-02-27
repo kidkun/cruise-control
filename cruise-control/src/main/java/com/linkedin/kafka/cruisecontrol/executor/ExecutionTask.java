@@ -11,6 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.linkedin.kafka.cruisecontrol.executor.ExecutionTask.State.*;
 
@@ -42,11 +43,16 @@ public class ExecutionTask implements Comparable<ExecutionTask> {
   private static final String EXECUTION_ID = "executionId";
   private static final String TYPE = "type";
   private static final String STATE = "state";
-  private static final String PROPOSAL = "proposal";
+  private static final String TOPIC_PARTITION = "topicPartition";
+  private static final String OLD_LEADER = "oldLeader";
+  private static final String NEW_LEADER = "newLeader";
+  private static final String OLD_REPLICAS = "oldReplicas";
+  private static final String NEW_REPLICAS = "newReplicas";
   private static final Map<State, Set<State>> VALID_TRANSFER = new HashMap<>();
   private final TaskType _type;
   private final long _executionId;
   private final ExecutionProposal _proposal;
+  private final int _brokerId;
   private State _state;
   private long _startTime;
   private long _endTime;
@@ -65,16 +71,25 @@ public class ExecutionTask implements Comparable<ExecutionTask> {
    *
    * @param executionId The execution id of the proposal so we can keep track of the task when execute it.
    * @param proposal The corresponding balancing proposal of this task.
+   * @param brokerId The broker to operate on if the task is of type {@link TaskType#INTRA_BROKER_REPLICA_ACTION}.
    * @param type the {@link TaskType} of this task.
    */
-  public ExecutionTask(long executionId, ExecutionProposal proposal, TaskType type) {
+  public ExecutionTask(long executionId, ExecutionProposal proposal, Integer brokerId, TaskType type) {
+    if (type != TaskType.INTRA_BROKER_REPLICA_ACTION && brokerId != null) {
+      throw new IllegalArgumentException("Broker id is specified for non-intra-broker task.");
+    }
     _executionId = executionId;
     _proposal = proposal;
+    _brokerId =  brokerId == null ? -1 : brokerId;
     _state = State.PENDING;
     _type = type;
     _startTime = -1L;
     _endTime = -1L;
+  }
 
+
+  public ExecutionTask(long executionId, ExecutionProposal proposal, TaskType type) {
+    this(executionId, proposal, null, type);
   }
 
   /**
@@ -133,6 +148,13 @@ public class ExecutionTask implements Comparable<ExecutionTask> {
    */
   public long endTime() {
     return _endTime;
+  }
+
+  /**
+   * @return The broker id for intra-broker replica movement task.
+   */
+  public int brokerId() {
+    return _brokerId;
   }
 
   /**
@@ -198,7 +220,24 @@ public class ExecutionTask implements Comparable<ExecutionTask> {
     executionStatsMap.put(EXECUTION_ID, _executionId);
     executionStatsMap.put(TYPE, _type);
     executionStatsMap.put(STATE, _state);
-    executionStatsMap.put(PROPOSAL, _proposal.getJsonStructure());
+    executionStatsMap.put(TOPIC_PARTITION, _proposal.topicPartition());
+    switch (_type) {
+      case INTER_BROKER_REPLICA_ACTION:
+          executionStatsMap.put(OLD_REPLICAS, _proposal.oldReplicas());
+          executionStatsMap.put(NEW_REPLICAS, _proposal.newReplicas());
+          break;
+      case INTRA_BROKER_REPLICA_ACTION:
+        executionStatsMap.put(OLD_REPLICAS, _proposal.oldReplicas().stream().filter(r -> r.brokerId() == _brokerId)
+                                                     .collect(Collectors.toList()));
+        executionStatsMap.put(NEW_REPLICAS, Collections.singletonList(_proposal.replicasToMoveByBroker().get(_brokerId)));
+        break;
+      case LEADER_ACTION:
+        executionStatsMap.put(OLD_LEADER, _proposal.oldLeader());
+        executionStatsMap.put(NEW_LEADER, _proposal.newReplicas().get(0));
+        break;
+      default:
+        break;
+    }
     return executionStatsMap;
   }
 
@@ -210,7 +249,14 @@ public class ExecutionTask implements Comparable<ExecutionTask> {
   }
 
   public enum TaskType {
-    REPLICA_ACTION, LEADER_ACTION
+    INTER_BROKER_REPLICA_ACTION, INTRA_BROKER_REPLICA_ACTION, LEADER_ACTION;
+
+    private static final List<TaskType> CACHED_VALUES =
+        Arrays.asList(INTER_BROKER_REPLICA_ACTION, INTRA_BROKER_REPLICA_ACTION, LEADER_ACTION);
+
+    public static List<TaskType> cachedValues() {
+      return CACHED_VALUES;
+    }
   }
 
   public enum State {
@@ -226,7 +272,20 @@ public class ExecutionTask implements Comparable<ExecutionTask> {
 
   @Override
   public String toString() {
-    return String.format("{EXE_ID: %d, %s, %s, %s}", _executionId, _type, _proposal, _state);
+    switch (_type) {
+      case INTER_BROKER_REPLICA_ACTION:
+        return String.format("{EXE_ID: %d, %s, %s, %s -> %s, %s}", _executionId, _type, _proposal.topicPartition(),
+                             _proposal.oldReplicas(), _proposal.newReplicas(), _state);
+      case INTRA_BROKER_REPLICA_ACTION:
+        return String.format("{EXE_ID: %d, %s, %s, %s -> %s, %s}", _executionId, _type, _proposal.topicPartition(),
+                             _proposal.oldReplicas().stream().filter(r -> r.brokerId() == _brokerId).collect(Collectors.toList()),
+                             Collections.singletonList(_proposal.replicasToMoveByBroker().get(_brokerId)), _state);
+      case LEADER_ACTION:
+        return String.format("{EXE_ID: %d, %s, %s, %s -> %s, %s}", _executionId, _type, _proposal.topicPartition(),
+                             _proposal.oldLeader(), _proposal.newReplicas().get(0), _state);
+      default:
+        throw new IllegalStateException("Unknown task type " + _type);
+    }
   }
 
   @Override

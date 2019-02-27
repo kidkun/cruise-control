@@ -11,10 +11,12 @@ import com.linkedin.kafka.cruisecontrol.config.KafkaCruiseControlConfig;
 import com.linkedin.kafka.cruisecontrol.common.KafkaCruiseControlThreadFactory;
 import com.linkedin.kafka.cruisecontrol.common.MetadataClient;
 import com.linkedin.kafka.cruisecontrol.executor.strategy.ReplicaMovementStrategy;
+import com.linkedin.kafka.cruisecontrol.model.ClusterModel;
 import com.linkedin.kafka.cruisecontrol.monitor.LoadMonitor;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -26,6 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import kafka.zk.KafkaZkClient;
 import org.apache.kafka.clients.Metadata;
+import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
@@ -41,8 +44,11 @@ import static com.linkedin.kafka.cruisecontrol.executor.ExecutionTask.State.ABOR
 import static com.linkedin.kafka.cruisecontrol.executor.ExecutionTask.State.ABORTING;
 import static com.linkedin.kafka.cruisecontrol.executor.ExecutionTask.State.DEAD;
 import static com.linkedin.kafka.cruisecontrol.executor.ExecutionTask.State.IN_PROGRESS;
-
-
+import static com.linkedin.kafka.cruisecontrol.executor.ExecutorState.State.*;
+import static com.linkedin.kafka.cruisecontrol.executor.ExecutionTask.TaskType.*;
+import static com.linkedin.kafka.cruisecontrol.executor.ExecutionTaskTracker.ExecutionTasksSummary;
+import static com.linkedin.kafka.cruisecontrol.executor.ExecutorUtils.*;
+import static org.apache.kafka.clients.admin.DescribeReplicaLogDirsResult.ReplicaLogDirInfo;
 /**
  * Executor for Kafka GoalOptimizer.
  * <p>
@@ -65,6 +71,7 @@ public class Executor {
   private final long _statusCheckingIntervalMs;
   private final ExecutorService _proposalExecutor;
   private final KafkaZkClient _kafkaZkClient;
+  private final AdminClient _adminClient;
 
   private static final long METADATA_REFRESH_BACKOFF = 100L;
   private static final long METADATA_EXPIRY_MS = Long.MAX_VALUE;
@@ -73,9 +80,6 @@ public class Executor {
   private final AtomicBoolean _stopRequested;
   private final Time _time;
   private volatile boolean _hasOngoingExecution;
-  private volatile int _numFinishedPartitionMovements;
-  private volatile int _numFinishedLeadershipMovements;
-  private volatile long _finishedDataMovementInMB;
   private volatile ExecutorState _executorState;
   private volatile String _uuid;
 
@@ -136,10 +140,13 @@ public class Executor {
 
     _time = time;
     _kafkaZkClient = KafkaCruiseControlUtils.createKafkaZkClient(zkUrl, ZK_EXECUTOR_METRIC_GROUP, ZK_EXECUTOR_METRIC_TYPE);
+    _adminClient = KafkaCruiseControlUtils.createAdminClient(KafkaCruiseControlUtils.parseAdminClientConfigs(config));
     _executionTaskManager =
-        new ExecutionTaskManager(config.getInt(KafkaCruiseControlConfig.NUM_CONCURRENT_PARTITION_MOVEMENTS_PER_BROKER_CONFIG),
+        new ExecutionTaskManager(config.getInt(KafkaCruiseControlConfig.NUM_CONCURRENT_INTER_BROKER_PARTITION_MOVEMENTS_PER_BROKER_CONFIG),
+                                 config.getInt(KafkaCruiseControlConfig.NUM_CONCURRENT_INTRA_BROKER_PARTITION_MOVEMENTS_PER_BROKER_CONFIG),
                                  config.getInt(KafkaCruiseControlConfig.NUM_CONCURRENT_LEADER_MOVEMENTS_CONFIG),
                                  config.getList(KafkaCruiseControlConfig.DEFAULT_REPLICA_MOVEMENT_STRATEGIES_CONFIG),
+                                 _adminClient,
                                  dropwizardMetricRegistry,
                                  time);
     _metadataClient = metadataClient != null
@@ -241,8 +248,10 @@ public class Executor {
    * @param unthrottledBrokers Brokers that are not throttled in terms of the number of in/out replica movements.
    * @param removedBrokers Removed brokers, null if no brokers has been removed.
    * @param loadMonitor Load monitor.
-   * @param requestedPartitionMovementConcurrency The maximum number of concurrent partition movements per broker
-   *                                              (if null, use num.concurrent.partition.movements.per.broker).
+   * @param requestedInterBrokerPartitionMovementConcurrency The maximum number of concurrent inter-broker partition movements
+   *                                                         per broker(if null, use num.concurrent.partition.movements.per.broker).
+   * @param requestedIntraBrokerPartitionMovementConcurrency The maximum number of concurrent intra-broker partition movements
+   *                                                         per broker(if null, use num.concurrent.partition.movements.per.broker).
    * @param requestedLeadershipMovementConcurrency The maximum number of concurrent leader movements
    *                                               (if null, use num.concurrent.leader.movements).
    * @param replicaMovementStrategy The strategy used to determine the execution order of generated replica movement tasks.
@@ -252,19 +261,22 @@ public class Executor {
                                             Collection<Integer> unthrottledBrokers,
                                             Collection<Integer> removedBrokers,
                                             LoadMonitor loadMonitor,
-                                            Integer requestedPartitionMovementConcurrency,
+                                            Integer requestedInterBrokerPartitionMovementConcurrency,
+                                            Integer requestedIntraBrokerPartitionMovementConcurrency,
                                             Integer requestedLeadershipMovementConcurrency,
                                             ReplicaMovementStrategy replicaMovementStrategy,
                                             String uuid) {
-    initProposalExecution(proposals, unthrottledBrokers, loadMonitor, requestedPartitionMovementConcurrency,
-                          requestedLeadershipMovementConcurrency, replicaMovementStrategy, uuid);
+    initProposalExecution(proposals, unthrottledBrokers, loadMonitor, requestedInterBrokerPartitionMovementConcurrency,
+                          requestedIntraBrokerPartitionMovementConcurrency, requestedLeadershipMovementConcurrency,
+                          replicaMovementStrategy, uuid);
     startExecution(loadMonitor, null, removedBrokers);
   }
 
   private synchronized void initProposalExecution(Collection<ExecutionProposal> proposals,
                                                   Collection<Integer> brokersToSkipConcurrencyCheck,
                                                   LoadMonitor loadMonitor,
-                                                  Integer requestedPartitionMovementConcurrency,
+                                                  Integer requestedInterBrokerPartitionMovementConcurrency,
+                                                  Integer requestedIntraBrokerPartitionMovementConcurrency,
                                                   Integer requestedLeadershipMovementConcurrency,
                                                   ReplicaMovementStrategy replicaMovementStrategy,
                                                   String uuid) {
@@ -281,7 +293,8 @@ public class Executor {
     _executionTaskManager.setExecutionModeForTaskTracker(_isKafkaAssignerMode);
     _executionTaskManager.addExecutionProposals(proposals, brokersToSkipConcurrencyCheck, _metadataClient.refreshMetadata().cluster(),
                                                 replicaMovementStrategy);
-    setRequestedPartitionMovementConcurrency(requestedPartitionMovementConcurrency);
+    setRequestedInterBrokerPartitionMovementConcurrency(requestedInterBrokerPartitionMovementConcurrency);
+    setRequestedIntraBrokerPartitionMovementConcurrency(requestedIntraBrokerPartitionMovementConcurrency);
     setRequestedLeadershipMovementConcurrency(requestedLeadershipMovementConcurrency);
     _uuid = uuid;
   }
@@ -305,18 +318,29 @@ public class Executor {
                                                   Integer requestedLeadershipMovementConcurrency,
                                                   ReplicaMovementStrategy replicaMovementStrategy,
                                                   String uuid) {
-    initProposalExecution(proposals, demotedBrokers, loadMonitor, concurrentSwaps, requestedLeadershipMovementConcurrency,
+    initProposalExecution(proposals, demotedBrokers, loadMonitor, concurrentSwaps, requestedLeadershipMovementConcurrency, 0,
                           replicaMovementStrategy, uuid);
     startExecution(loadMonitor, demotedBrokers, null);
   }
 
   /**
-   * Dynamically set the partition movement concurrency per broker.
+   * Dynamically set the inter-broker partition movement concurrency per broker.
    *
-   * @param requestedPartitionMovementConcurrency The maximum number of concurrent partition movements per broker.
+   * @param requestedInterBrokerPartitionMovementConcurrency The maximum number of concurrent inter-broker partition movements
+   *                                                         per broker.
    */
-  public void setRequestedPartitionMovementConcurrency(Integer requestedPartitionMovementConcurrency) {
-    _executionTaskManager.setRequestedPartitionMovementConcurrency(requestedPartitionMovementConcurrency);
+  public void setRequestedInterBrokerPartitionMovementConcurrency(Integer requestedInterBrokerPartitionMovementConcurrency) {
+    _executionTaskManager.setRequestedInterBrokerPartitionMovementConcurrency(requestedInterBrokerPartitionMovementConcurrency);
+  }
+
+  /**
+   * Dynamically set the intra-broker partition movement concurrency per broker.
+   *
+   * @param requestedIntraBrokerPartitionMovementConcurrency The maximum number of concurrent intra-broker partition movements
+   *                                                         per broker.
+   */
+  public void setRequestedIntraBrokerPartitionMovementConcurrency(Integer requestedIntraBrokerPartitionMovementConcurrency) {
+    _executionTaskManager.setRequestedIntraBrokerPartitionMovementConcurrency(requestedIntraBrokerPartitionMovementConcurrency);
   }
 
   /**
@@ -361,7 +385,7 @@ public class Executor {
    * @param removedBrokers Brokers to be removed, null if no broker has been removed.
    */
   private void startExecution(LoadMonitor loadMonitor, Collection<Integer> demotedBrokers, Collection<Integer> removedBrokers) {
-    if (!ExecutorUtils.partitionsBeingReassigned(_kafkaZkClient).isEmpty()) {
+    if (!ExecutorZkUtils.partitionsBeingReassigned(_kafkaZkClient).isEmpty()) {
       _executionTaskManager.clear();
       _uuid = null;
       // Note that in case there is an ongoing partition reassignment, we do not unpause metric sampling.
@@ -416,6 +440,7 @@ public class Executor {
     }
     _metadataClient.close();
     KafkaCruiseControlUtils.closeKafkaZkClientWithTimeout(_kafkaZkClient);
+    KafkaCruiseControlUtils.closeAdminClientWithTimeout(_adminClient);
     _executionHistoryScannerExecutor.shutdownNow();
     LOG.info("Executor shutdown completed.");
   }
@@ -462,7 +487,7 @@ public class Executor {
      * Start the actual execution of the proposals in order: First move replicas, then transfer leadership.
      */
     private void execute() {
-      _state = ExecutorState.State.STARTING_EXECUTION;
+      _state = STARTING_EXECUTION;
       _executorState = ExecutorState.executionStarted(_uuid, _recentlyDemotedBrokers, _recentlyRemovedBrokers);
       try {
         // Pause the metric sampling to avoid the loss of accuracy during execution.
@@ -477,32 +502,53 @@ public class Executor {
           }
         }
 
-        // 1. Move replicas if possible.
-        if (_state == ExecutorState.State.STARTING_EXECUTION) {
-          _state = ExecutorState.State.REPLICA_MOVEMENT_TASK_IN_PROGRESS;
+        // 1. Inter-broker move replicas if possible.
+        if (_state == STARTING_EXECUTION) {
+          _state = INTER_BROKER_REPLICA_MOVEMENT_TASK_IN_PROGRESS;
           // The _executorState might be inconsistent with _state if the user checks it between the two assignments.
-          _executorState = ExecutorState.replicaMovementInProgress(_numFinishedPartitionMovements,
-                                                                   _executionTaskManager.getExecutionTasksSummary(),
-                                                                   _finishedDataMovementInMB,
-                                                                   _executionTaskManager.partitionMovementConcurrency(),
-                                                                   _executionTaskManager.leadershipMovementConcurrency(),
-                                                                   _uuid,
-                                                                   _recentlyDemotedBrokers,
-                                                                   _recentlyRemovedBrokers);
-          moveReplicas();
+          _executorState = ExecutorState.operationInProgress(INTER_BROKER_REPLICA_MOVEMENT_TASK_IN_PROGRESS,
+                                                             _executionTaskManager.getExecutionTasksSummary(
+                                                                 Collections.singletonList(INTER_BROKER_REPLICA_ACTION), false),
+                                                             _executionTaskManager.interBrokerPartitionMovementConcurrency(),
+                                                             _executionTaskManager.intraBrokerPartitionMovementConcurrency(),
+                                                             _executionTaskManager.leadershipMovementConcurrency(),
+                                                             _uuid,
+                                                             _recentlyDemotedBrokers,
+                                                             _recentlyRemovedBrokers);
+          interBrokerMoveReplicas();
           updateOngoingExecutionState();
         }
-        // 2. Transfer leadership if possible.
-        if (_state == ExecutorState.State.REPLICA_MOVEMENT_TASK_IN_PROGRESS) {
-          _state = ExecutorState.State.LEADER_MOVEMENT_TASK_IN_PROGRESS;
+
+        // 2. Intra-broker move replicas if possible.
+        if (_state == INTER_BROKER_REPLICA_MOVEMENT_TASK_IN_PROGRESS) {
+          _state = INTRA_BROKER_REPLICA_MOVEMENT_TASK_IN_PROGRESS;
           // The _executorState might be inconsistent with _state if the user checks it between the two assignments.
-          _executorState = ExecutorState.leaderMovementInProgress(_numFinishedLeadershipMovements,
-                                                                  _executionTaskManager.getExecutionTasksSummary(),
-                                                                  _executionTaskManager.partitionMovementConcurrency(),
-                                                                  _executionTaskManager.leadershipMovementConcurrency(),
-                                                                  _uuid,
-                                                                  _recentlyDemotedBrokers,
-                                                                  _recentlyRemovedBrokers);
+          _executorState = ExecutorState.operationInProgress(INTRA_BROKER_REPLICA_MOVEMENT_TASK_IN_PROGRESS,
+                                                             _executionTaskManager.getExecutionTasksSummary(
+                                                                 Collections.singletonList(INTRA_BROKER_REPLICA_ACTION), false),
+                                                             _executionTaskManager.interBrokerPartitionMovementConcurrency(),
+                                                             _executionTaskManager.intraBrokerPartitionMovementConcurrency(),
+                                                             _executionTaskManager.leadershipMovementConcurrency(),
+                                                             _uuid,
+                                                             _recentlyDemotedBrokers,
+                                                             _recentlyRemovedBrokers);
+          intraBrokerMoveReplicas();
+          updateOngoingExecutionState();
+        }
+
+        // 3. Transfer leadership if possible.
+        if (_state == INTRA_BROKER_REPLICA_MOVEMENT_TASK_IN_PROGRESS) {
+          _state = LEADER_MOVEMENT_TASK_IN_PROGRESS;
+          // The _executorState might be inconsistent with _state if the user checks it between the two assignments.
+          _executorState = ExecutorState.operationInProgress(LEADER_MOVEMENT_TASK_IN_PROGRESS,
+                                                             _executionTaskManager.getExecutionTasksSummary(
+                                                                 Collections.singletonList(LEADER_ACTION), false),
+                                                             _executionTaskManager.interBrokerPartitionMovementConcurrency(),
+                                                             _executionTaskManager.intraBrokerPartitionMovementConcurrency(),
+                                                             _executionTaskManager.leadershipMovementConcurrency(),
+                                                             _uuid,
+                                                             _recentlyDemotedBrokers,
+                                                             _recentlyRemovedBrokers);
           moveLeaderships();
           updateOngoingExecutionState();
         }
@@ -524,114 +570,172 @@ public class Executor {
       _executorState = ExecutorState.noTaskInProgress(_recentlyDemotedBrokers, _recentlyRemovedBrokers);
       _hasOngoingExecution = false;
       _stopRequested.set(false);
-      _numFinishedPartitionMovements = 0;
-      _numFinishedLeadershipMovements = 0;
-      _finishedDataMovementInMB = 0L;
     }
 
     private void updateOngoingExecutionState() {
       if (!_stopRequested.get()) {
         switch (_state) {
           case LEADER_MOVEMENT_TASK_IN_PROGRESS:
-            _executorState = ExecutorState.leaderMovementInProgress(_numFinishedLeadershipMovements,
-                                                                    _executionTaskManager.getExecutionTasksSummary(),
-                                                                    _executionTaskManager.partitionMovementConcurrency(),
-                                                                    _executionTaskManager.leadershipMovementConcurrency(),
-                                                                    _uuid,
-                                                                    _recentlyDemotedBrokers,
-                                                                    _recentlyRemovedBrokers);
+            _executorState = ExecutorState.operationInProgress(LEADER_MOVEMENT_TASK_IN_PROGRESS,
+                                                               _executionTaskManager.getExecutionTasksSummary(
+                                                                   Collections.singletonList(LEADER_ACTION), false),
+                                                               _executionTaskManager.interBrokerPartitionMovementConcurrency(),
+                                                               _executionTaskManager.intraBrokerPartitionMovementConcurrency(),
+                                                               _executionTaskManager.leadershipMovementConcurrency(),
+                                                               _uuid,
+                                                               _recentlyDemotedBrokers,
+                                                               _recentlyRemovedBrokers);
             break;
-          case REPLICA_MOVEMENT_TASK_IN_PROGRESS:
-            _executorState = ExecutorState.replicaMovementInProgress(_numFinishedPartitionMovements,
-                                                                     _executionTaskManager.getExecutionTasksSummary(),
-                                                                     _finishedDataMovementInMB,
-                                                                     _executionTaskManager.partitionMovementConcurrency(),
-                                                                     _executionTaskManager.leadershipMovementConcurrency(),
-                                                                     _uuid,
-                                                                     _recentlyDemotedBrokers,
-                                                                     _recentlyRemovedBrokers);
+          case INTER_BROKER_REPLICA_MOVEMENT_TASK_IN_PROGRESS:
+            _executorState = ExecutorState.operationInProgress(INTER_BROKER_REPLICA_MOVEMENT_TASK_IN_PROGRESS,
+                                                               _executionTaskManager.getExecutionTasksSummary(
+                                                                   Collections.singletonList(INTER_BROKER_REPLICA_ACTION), false),
+                                                               _executionTaskManager.interBrokerPartitionMovementConcurrency(),
+                                                               _executionTaskManager.intraBrokerPartitionMovementConcurrency(),
+                                                               _executionTaskManager.leadershipMovementConcurrency(),
+                                                               _uuid,
+                                                               _recentlyDemotedBrokers,
+                                                               _recentlyRemovedBrokers);
+            break;
+          case INTRA_BROKER_REPLICA_MOVEMENT_TASK_IN_PROGRESS:
+            _executorState = ExecutorState.operationInProgress(LEADER_MOVEMENT_TASK_IN_PROGRESS,
+                                                               _executionTaskManager.getExecutionTasksSummary(
+                                                                   Collections.singletonList(LEADER_ACTION), false),
+                                                               _executionTaskManager.interBrokerPartitionMovementConcurrency(),
+                                                               _executionTaskManager.intraBrokerPartitionMovementConcurrency(),
+                                                               _executionTaskManager.leadershipMovementConcurrency(),
+                                                               _uuid,
+                                                               _recentlyDemotedBrokers,
+                                                               _recentlyRemovedBrokers);
             break;
           default:
             throw new IllegalStateException("Unexpected ongoing execution state " + _state);
         }
       } else {
         _state = ExecutorState.State.STOPPING_EXECUTION;
-        _executorState = ExecutorState.stopping(_numFinishedPartitionMovements,
-                                                _numFinishedLeadershipMovements,
-                                                _executionTaskManager.getExecutionTasksSummary(),
-                                                _finishedDataMovementInMB,
-                                                _executionTaskManager.partitionMovementConcurrency(),
-                                                _executionTaskManager.leadershipMovementConcurrency(), _uuid,
-                                                _recentlyDemotedBrokers,
-                                                _recentlyRemovedBrokers);
+        _executorState = ExecutorState.operationInProgress(STOPPING_EXECUTION,
+                                                           _executionTaskManager.getExecutionTasksSummary(
+                                                               Arrays.asList(ExecutionTask.TaskType.values()), true),
+                                                           _executionTaskManager.interBrokerPartitionMovementConcurrency(),
+                                                           _executionTaskManager.intraBrokerPartitionMovementConcurrency(),
+                                                           _executionTaskManager.leadershipMovementConcurrency(),
+                                                           _uuid,
+                                                           _recentlyDemotedBrokers,
+                                                           _recentlyRemovedBrokers);
       }
     }
 
-    private void moveReplicas() {
-      int numTotalPartitionMovements = _executionTaskManager.remainingPartitionMovements().size();
-      long totalDataToMoveInMB = _executionTaskManager.remainingDataToMoveInMB();
-      LOG.info("Starting {} partition movements.", numTotalPartitionMovements);
+    private void interBrokerMoveReplicas() {
+      int numTotalPartitionMovements = _executionTaskManager.numRemainingInterBrokerPartitionMovements();
+      long totalDataToMoveInMB = _executionTaskManager.remainingInterBrokerDataToMoveInMB();
+      LOG.info("Starting {} inter-broker partition movements.", numTotalPartitionMovements);
 
       int partitionsToMove = numTotalPartitionMovements;
       // Exhaust all the pending partition movements.
       while ((partitionsToMove > 0 || !_executionTaskManager.inExecutionTasks().isEmpty()) && !_stopRequested.get()) {
         // Get tasks to execute.
-        List<ExecutionTask> tasksToExecute = _executionTaskManager.getReplicaMovementTasks();
+        List<ExecutionTask> tasksToExecute = _executionTaskManager.getInterBrokerReplicaMovementTasks();
         LOG.info("Executor will execute {} task(s)", tasksToExecute.size());
 
         if (!tasksToExecute.isEmpty()) {
           // Execute the tasks.
           _executionTaskManager.markTasksInProgress(tasksToExecute);
-          ExecutorUtils.executeReplicaReassignmentTasks(_kafkaZkClient, tasksToExecute);
+          ExecutorZkUtils.executeReplicaReassignmentTasks(_kafkaZkClient, tasksToExecute);
         }
         // Wait indefinitely for partition movements to finish.
         waitForExecutionTaskToFinish();
-        partitionsToMove = _executionTaskManager.remainingPartitionMovements().size();
-        long dataToMove = _executionTaskManager.remainingDataToMoveInMB();
-        Set<ExecutionTask> inExecutionTasks = _executionTaskManager.inExecutionTasks();
-        _numFinishedPartitionMovements = numTotalPartitionMovements - partitionsToMove - inExecutionTasks.size();
-        _finishedDataMovementInMB = totalDataToMoveInMB - dataToMove - _executionTaskManager.inExecutionDataToMoveInMB();
-        LOG.info("{}/{} ({}%) partition movements completed. {}/{} ({}%) MB have been moved.",
-                 _numFinishedPartitionMovements, numTotalPartitionMovements,
+        partitionsToMove = _executionTaskManager.numRemainingInterBrokerPartitionMovements();
+        int numFinishedPartitionMovements = _executionTaskManager.numFinishedInterBrokerPartitionMovements();
+        long finishedDataToMoveInMB = _executionTaskManager.finishedInterBrokerDataMovementInMB();
+        LOG.info("{}/{} ({}%) inter-broker partition movements completed. {}/{} ({}%) MB have been moved.",
+                 numFinishedPartitionMovements, numTotalPartitionMovements,
                  String.format(java.util.Locale.US, "%.2f",
-                               _numFinishedPartitionMovements * 100.0 / numTotalPartitionMovements),
-                 _finishedDataMovementInMB, totalDataToMoveInMB,
+                               numFinishedPartitionMovements * 100.0 / numTotalPartitionMovements),
+                 finishedDataToMoveInMB, totalDataToMoveInMB,
                  totalDataToMoveInMB == 0 ? 100 : String.format(java.util.Locale.US, "%.2f",
-                                                                (_finishedDataMovementInMB * 100.0) / totalDataToMoveInMB));
+                                                                (finishedDataToMoveInMB * 100.0) / totalDataToMoveInMB));
       }
       // After the partition movement finishes, wait for the controller to clean the reassignment zkPath. This also
       // ensures a clean stop when the execution is stopped in the middle.
       Set<ExecutionTask> inExecutionTasks = _executionTaskManager.inExecutionTasks();
       while (!inExecutionTasks.isEmpty()) {
-        LOG.info("Waiting for {} tasks moving {} MB to finish: {}",
-                 inExecutionTasks.size(), _executionTaskManager.inExecutionDataToMoveInMB(), inExecutionTasks);
+        LOG.info("Waiting for {} tasks moving {} MB to finish: {}", inExecutionTasks.size(),
+                 _executionTaskManager.inExecutionInterBrokerDataToMoveInMB(), inExecutionTasks);
         waitForExecutionTaskToFinish();
         inExecutionTasks = _executionTaskManager.inExecutionTasks();
       }
-      if (_executionTaskManager.inProgressTasks().isEmpty()) {
-        LOG.info("Partition movements finished.");
-      } else if (_stopRequested.get()) {
-        ExecutionTaskManager.ExecutionTasksSummary executionTasksSummary = _executionTaskManager.getExecutionTasksSummary();
-        LOG.info("Partition movements stopped. {} in-progress, {} pending, {} aborting, {} aborted, {} dead, "
-                 + "{} remaining data to move.",
-                 executionTasksSummary.inProgressTasks().size(),
-                 executionTasksSummary.remainingPartitionMovements().size(),
-                 executionTasksSummary.abortingTasks(),
-                 executionTasksSummary.abortedTasks().size(),
-                 executionTasksSummary.deadTasks().size(),
-                 executionTasksSummary.remainingDataToMoveInMB());
+      ExecutionTasksSummary executionTasksSummary = _executionTaskManager.getExecutionTasksSummary(Collections.emptyList(), false);
+      LOG.info("Inter-broker partition movements {} with {} tasks {}, {} tasks in-progress, , {} tasks aborting, {} tasks aborted, {} tasks dead, "
+               + "{} tasks completed.",
+               _stopRequested.get() ? "stopped" : "finished",
+               executionTasksSummary.taskStat().get(INTER_BROKER_REPLICA_ACTION).get(ExecutionTask.State.PENDING),
+               _stopRequested.get() ? "cancelled" : "pending",
+               executionTasksSummary.taskStat().get(INTER_BROKER_REPLICA_ACTION).get(ExecutionTask.State.IN_PROGRESS),
+               executionTasksSummary.taskStat().get(INTER_BROKER_REPLICA_ACTION).get(ExecutionTask.State.ABORTING),
+               executionTasksSummary.taskStat().get(INTER_BROKER_REPLICA_ACTION).get(ExecutionTask.State.ABORTED),
+               executionTasksSummary.taskStat().get(INTER_BROKER_REPLICA_ACTION).get(ExecutionTask.State.DEAD),
+               executionTasksSummary.taskStat().get(INTER_BROKER_REPLICA_ACTION).get(ExecutionTask.State.COMPLETED));
       }
+
+    private void intraBrokerMoveReplicas() {
+      int numTotalPartitionMovements = _executionTaskManager.numRemainingIntraBrokerPartitionMovements();
+      long totalDataToMoveInMB = _executionTaskManager.remainingIntraBrokerDataToMoveInMB();
+      LOG.info("Starting {} intra-broker partition movements.", numTotalPartitionMovements);
+
+      int partitionsToMove = numTotalPartitionMovements;
+      // Exhaust all the pending partition movements.
+      while ((partitionsToMove > 0 || !_executionTaskManager.inExecutionTasks().isEmpty()) && !_stopRequested.get()) {
+        // Get tasks to execute.
+        List<ExecutionTask> tasksToExecute = _executionTaskManager.getIntraBrokerReplicaMovementTasks();
+        LOG.info("Executor will execute {} task(s)", tasksToExecute.size());
+
+        if (!tasksToExecute.isEmpty()) {
+          // Execute the tasks.
+          _executionTaskManager.markTasksInProgress(tasksToExecute);
+          executeIntraBrokerReplicaMovements(tasksToExecute, _adminClient, _executionTaskManager);
+        }
+        // Wait indefinitely for partition movements to finish.
+        waitForExecutionTaskToFinish();
+        partitionsToMove = _executionTaskManager.numRemainingIntraBrokerPartitionMovements();
+        int numFinishedPartitionMovements = _executionTaskManager.numFinishedIntraBrokerPartitionMovements();
+        long finishedDataToMoveInMB = _executionTaskManager.finishedIntraBrokerDataToMoveInMB();
+        LOG.info("{}/{} ({}%) intra-broker partition movements completed. {}/{} ({}%) MB have been moved.",
+            numFinishedPartitionMovements, numTotalPartitionMovements,
+            String.format(java.util.Locale.US, "%.2f",
+                          numFinishedPartitionMovements * 100.0 / numTotalPartitionMovements),
+            finishedDataToMoveInMB, totalDataToMoveInMB,
+            totalDataToMoveInMB == 0 ? 100 : String.format(java.util.Locale.US, "%.2f",
+                                                           (finishedDataToMoveInMB * 100.0) / totalDataToMoveInMB));
+      }
+      Set<ExecutionTask> inExecutionTasks = _executionTaskManager.inExecutionTasks();
+      while (!inExecutionTasks.isEmpty()) {
+        LOG.info("Waiting for {} tasks moving {} MB to finish: {}", inExecutionTasks.size(),
+                 _executionTaskManager.inExecutionIntraBrokerDataMovementInMB(), inExecutionTasks);
+        waitForExecutionTaskToFinish();
+        inExecutionTasks = _executionTaskManager.inExecutionTasks();
+      }
+      ExecutionTasksSummary executionTasksSummary = _executionTaskManager.getExecutionTasksSummary(Collections.emptyList(), false);
+      LOG.info("Intra-broker partition movements {} with {} tasks {}, {} tasks in-progress, , {} tasks aborting, {} tasks aborted, {} tasks dead, "
+               + "{} tasks completed.",
+               _stopRequested.get() ? "stopped" : "finished",
+               executionTasksSummary.taskStat().get(INTRA_BROKER_REPLICA_ACTION).get(ExecutionTask.State.PENDING),
+               _stopRequested.get() ? "cancelled" : "pending",
+               executionTasksSummary.taskStat().get(INTRA_BROKER_REPLICA_ACTION).get(ExecutionTask.State.IN_PROGRESS),
+               executionTasksSummary.taskStat().get(INTRA_BROKER_REPLICA_ACTION).get(ExecutionTask.State.ABORTING),
+               executionTasksSummary.taskStat().get(INTRA_BROKER_REPLICA_ACTION).get(ExecutionTask.State.ABORTED),
+               executionTasksSummary.taskStat().get(INTRA_BROKER_REPLICA_ACTION).get(ExecutionTask.State.DEAD),
+               executionTasksSummary.taskStat().get(INTRA_BROKER_REPLICA_ACTION).get(ExecutionTask.State.COMPLETED));
     }
 
     private void moveLeaderships() {
-      int numTotalLeadershipMovements = _executionTaskManager.remainingLeadershipMovements().size();
+      int numTotalLeadershipMovements = _executionTaskManager.numRemainingLeadershipMovements();
       LOG.info("Starting {} leadership movements.", numTotalLeadershipMovements);
-      _numFinishedLeadershipMovements = 0;
-      while (!_executionTaskManager.remainingLeadershipMovements().isEmpty() && !_stopRequested.get()) {
+      while (_executionTaskManager.numRemainingLeadershipMovements() != 0 && !_stopRequested.get()) {
         updateOngoingExecutionState();
-        _numFinishedLeadershipMovements += moveLeadershipInBatch();
-        LOG.info("{}/{} ({}%) leadership movements completed.", _numFinishedLeadershipMovements,
-                 numTotalLeadershipMovements, _numFinishedLeadershipMovements * 100 / numTotalLeadershipMovements);
+        moveLeadershipInBatch();
+        int numFinishedLeadershipMovements = _executionTaskManager.numFinishedLeadershipMovements();
+        LOG.info("{}/{} ({}%) leadership movements completed.", numFinishedLeadershipMovements,
+                 numTotalLeadershipMovements, numFinishedLeadershipMovements * 100 / numTotalLeadershipMovements);
       }
       LOG.info("Leadership movements finished.");
     }
@@ -646,9 +750,9 @@ public class Executor {
         _executionTaskManager.markTasksInProgress(leadershipMovementTasks);
 
         // Run preferred leader election.
-        ExecutorUtils.executePreferredLeaderElection(_kafkaZkClient, leadershipMovementTasks);
+        ExecutorZkUtils.executePreferredLeaderElection(_kafkaZkClient, leadershipMovementTasks);
         LOG.trace("Waiting for leadership movement batch to finish.");
-        while (!_executionTaskManager.inProgressTasks().isEmpty() && !_stopRequested.get()) {
+        while (!_executionTaskManager.inExecutionTasks().isEmpty() && !_stopRequested.get()) {
           waitForExecutionTaskToFinish();
         }
       }
@@ -670,6 +774,10 @@ public class Executor {
         }
 
         Cluster cluster = _metadataClient.refreshMetadata().cluster();
+        Map<ExecutionTask, ReplicaLogDirInfo> logDirInfoByTask = getLogdirInfoForExecutionTask(
+            _executionTaskManager.inExecutionTasks(Collections.singletonList(INTRA_BROKER_REPLICA_ACTION)),
+            _adminClient);
+
         if (LOG.isDebugEnabled()) {
           LOG.debug("Tasks in execution: {}", _executionTaskManager.inExecutionTasks());
         }
@@ -682,11 +790,11 @@ public class Executor {
             finishedTasks.add(task);
             _executionTaskManager.markTaskAborting(task);
             _executionTaskManager.markTaskDone(task);
-          } else if (isTaskDone(cluster, tp, task)) {
+          } else if (isTaskDone(cluster, logDirInfoByTask, tp, task)) {
             // Check to see if the task is done.
             finishedTasks.add(task);
             _executionTaskManager.markTaskDone(task);
-          } else if (maybeMarkTaskAsDeadOrAborting(cluster, task)) {
+          } else if (maybeMarkTaskAsDeadOrAborting(cluster, logDirInfoByTask, task)) {
             // Only add the dead or aborted tasks to execute if it is not a leadership movement.
             if (task.type() != ExecutionTask.TaskType.LEADER_ACTION) {
               deadOrAbortingTasks.add(task);
@@ -715,16 +823,24 @@ public class Executor {
     /**
      * Check if a task is done.
      */
-    private boolean isTaskDone(Cluster cluster, TopicPartition tp, ExecutionTask task) {
-      if (task.type() == ExecutionTask.TaskType.REPLICA_ACTION) {
-        return isReplicaActionDone(cluster, tp, task);
-      } else {
-        return isLeadershipMovementDone(cluster, tp, task);
+    private boolean isTaskDone(Cluster cluster,
+                               Map<ExecutionTask, ReplicaLogDirInfo> logdirInfoByTask,
+                               TopicPartition  tp,
+                               ExecutionTask task) {
+      switch (task.type()) {
+        case INTER_BROKER_REPLICA_ACTION:
+          return isInterBrokerReplicaActionDone(cluster, tp, task);
+        case INTRA_BROKER_REPLICA_ACTION:
+          return isIntraBrokerReplicaActionDone(logdirInfoByTask, task);
+        case LEADER_ACTION:
+          return isLeadershipMovementDone(cluster, tp, task);
+        default:
+          return true;
       }
     }
 
     /**
-     * For a replica action, the completion depends on the task state:
+     * For a inter-broker replica movement action, the completion depends on the task state:
      * IN_PROGRESS: when the current replica list is the same as the new replica list.
      * ABORTING: done when the current replica list is the same as the old replica list. Due to race condition,
      *           we also consider it done if the current replica list is the same as the new replica list.
@@ -732,18 +848,31 @@ public class Executor {
      *
      * There should be no other task state seen here.
      */
-    private boolean isReplicaActionDone(Cluster cluster, TopicPartition tp, ExecutionTask task) {
+    private boolean isInterBrokerReplicaActionDone(Cluster cluster, TopicPartition tp, ExecutionTask task) {
       Node[] currentOrderedReplicas = cluster.partition(tp).replicas();
       switch (task.state()) {
         case IN_PROGRESS:
-          return task.proposal().isCompletedSuccessfully(currentOrderedReplicas);
+          return task.proposal().isInterBrokerMovementCompleted(currentOrderedReplicas);
         case ABORTING:
-          return task.proposal().isAborted(currentOrderedReplicas);
+          return task.proposal().isInterBrokerMovementAborted(currentOrderedReplicas);
         case DEAD:
           return true;
         default:
           throw new IllegalStateException("Should never be here. State " + task.state());
       }
+    }
+
+    /**
+     * Check whether intra-broker replica movement is done by comparing replica's current logdir with the logdir proposed
+     * by task's proposal.
+     */
+    private boolean isIntraBrokerReplicaActionDone(Map<ExecutionTask, ReplicaLogDirInfo> logdirInfoByTask,
+                                                   ExecutionTask task) {
+      if (logdirInfoByTask.containsKey(task)) {
+        return logdirInfoByTask.get(task).getCurrentReplicaLogDir()
+                               .equals(task.proposal().replicasToMoveByBroker().get(task.brokerId()).logdir());
+      }
+      return false;
     }
 
     private boolean isInIsr(Integer leader, Cluster cluster, TopicPartition tp) {
@@ -761,9 +890,9 @@ public class Executor {
       Node leader = cluster.leaderFor(tp);
       switch (task.state()) {
         case IN_PROGRESS:
-          return (leader != null && leader.id() == task.proposal().newLeader())
+          return (leader != null && leader.id() == task.proposal().newLeader().brokerId())
                  || leader == null
-                 || !isInIsr(task.proposal().newLeader(), cluster, tp);
+                 || !isInIsr(task.proposal().newLeader().brokerId(), cluster, tp);
         case ABORTING:
         case DEAD:
           return true;
@@ -778,26 +907,29 @@ public class Executor {
      *
      * Ideally, the task should be marked as:
      * 1. ABORTING: when the execution is stopped by the users.
-     * 2. ABORTING: When the destination broker is dead so the task cannot make progress, but the source broker is
-     *              still alive.
+     * 2. ABORTING: When the destination broker&disk is dead so the task cannot make progress, but the source broker&disk
+     *              is still alive.
      * 3. DEAD: when any replica in the new replica list is dead. Or when a leader action times out.
      *
      * Currently KafkaController does not support updates on the partitions that is being reassigned. (KAFKA-6304)
      * Therefore once a proposals is written to ZK, we cannot revoke it. So the actual behavior we are using is to
      * set the task state to:
      * 1. IN_PROGRESS: when the execution is stopped by the users. i.e. do nothing but let the task finish normally.
-     * 2. DEAD: when the destination broker is dead. i.e. do not block on the execution.
+     * 2. DEAD: when the destination broker&disk is dead. i.e. do not block on the execution.
      *
      * @param cluster the kafka cluster
+     * @param logdirInfoByTask  disk information for ongoing intra-broker replica movement tasks
      * @param task the task to check
      * @return true if the task is marked as dead or aborting, false otherwise.
      */
-    private boolean maybeMarkTaskAsDeadOrAborting(Cluster cluster, ExecutionTask task) {
+    private boolean maybeMarkTaskAsDeadOrAborting(Cluster cluster,
+                                                  Map<ExecutionTask, ReplicaLogDirInfo> logdirInfoByTask,
+                                                  ExecutionTask task) {
       // Only check tasks with IN_PROGRESS or ABORTING state.
       if (task.state() == IN_PROGRESS || task.state() == ABORTING) {
         switch (task.type()) {
           case LEADER_ACTION:
-            if (cluster.nodeById(task.proposal().newLeader()) == null) {
+            if (cluster.nodeById(task.proposal().newLeader().brokerId()) == null) {
               _executionTaskManager.markTaskDead(task);
               LOG.warn("Killing execution for task {} because the target leader is down", task);
               return true;
@@ -808,13 +940,21 @@ public class Executor {
             }
             break;
 
-          case REPLICA_ACTION:
-            for (int broker : task.proposal().newReplicas()) {
-              if (cluster.nodeById(broker) == null) {
+          case INTER_BROKER_REPLICA_ACTION:
+            for (ClusterModel.ReplicaPlacementInfo broker : task.proposal().newReplicas()) {
+              if (cluster.nodeById(broker.brokerId()) == null) {
                 _executionTaskManager.markTaskDead(task);
                 LOG.warn("Killing execution for task {} because the new replica {} is down.", task, broker);
                 return true;
               }
+            }
+            break;
+
+          case INTRA_BROKER_REPLICA_ACTION:
+            if (!logdirInfoByTask.containsKey(task)) {
+              _executionTaskManager.markTaskDead(task);
+              LOG.warn("Killing execution for task {} because the destination disk is down.", task);
+              return true;
             }
             break;
 
@@ -851,20 +991,35 @@ public class Executor {
      * deleted by controller without being executed. We will resubmit those tasks in that case.
      */
     private void maybeReexecuteTasks() {
-      List<ExecutionTask> replicaActionsToReexecute =
-          new ArrayList<>(_executionTaskManager.inExecutionTasks(ExecutionTask.TaskType.REPLICA_ACTION));
-      if (!isSubset(ExecutorUtils.partitionsBeingReassigned(_kafkaZkClient), replicaActionsToReexecute)) {
-        LOG.info("Reexecuting tasks {}", replicaActionsToReexecute);
-        ExecutorUtils.executeReplicaReassignmentTasks(_kafkaZkClient, replicaActionsToReexecute);
+      List<ExecutionTask> interBrokerReplicaActionsToReexecute =
+          new ArrayList<>(_executionTaskManager.inExecutionTasks(Collections.singletonList(INTER_BROKER_REPLICA_ACTION)));
+      if (!isSubset(ExecutorZkUtils.partitionsBeingReassigned(_kafkaZkClient), interBrokerReplicaActionsToReexecute)) {
+        LOG.info("Reexecuting tasks {}", interBrokerReplicaActionsToReexecute);
+        ExecutorZkUtils.executeReplicaReassignmentTasks(_kafkaZkClient, interBrokerReplicaActionsToReexecute);
+      }
+
+      List<ExecutionTask> intraBrokerReplicaActionsToReexecute =
+          new ArrayList<>(_executionTaskManager.inExecutionTasks(Collections.singletonList(INTRA_BROKER_REPLICA_ACTION)));
+      getLogdirInfoForExecutionTask(intraBrokerReplicaActionsToReexecute, _adminClient).forEach((k, v) -> {
+        String targetLogdir = k.proposal().replicasToMoveByBroker().get(k.brokerId()).logdir();
+        // If task is completed or in-progess, do not reexecute the task.
+        if (targetLogdir.equals(v.getCurrentReplicaLogDir()) || targetLogdir.equals(v.getFutureReplicaLogDir())) {
+          intraBrokerReplicaActionsToReexecute.remove(k);
+        }
+      });
+      if (!intraBrokerReplicaActionsToReexecute.isEmpty()) {
+        LOG.info("Reexecuting tasks {}", intraBrokerReplicaActionsToReexecute);
+        executeIntraBrokerReplicaMovements(intraBrokerReplicaActionsToReexecute, _adminClient, _executionTaskManager);
       }
 
       // Only reexecute leader actions if there is no replica actions running.
-      if (replicaActionsToReexecute.isEmpty() && ExecutorUtils.ongoingLeaderElection(_kafkaZkClient).isEmpty()) {
-        List<ExecutionTask> leaderActionsToReexecute =
-            new ArrayList<>(_executionTaskManager.inExecutionTasks(ExecutionTask.TaskType.LEADER_ACTION));
+      if (interBrokerReplicaActionsToReexecute.isEmpty() &&
+          intraBrokerReplicaActionsToReexecute.isEmpty() &&
+          ExecutorZkUtils.ongoingLeaderElection(_kafkaZkClient).isEmpty()) {
+        List<ExecutionTask> leaderActionsToReexecute = new ArrayList<>(_executionTaskManager.inExecutionTasks(Collections.singletonList(LEADER_ACTION)));
         if (!leaderActionsToReexecute.isEmpty()) {
           LOG.info("Reexecuting tasks {}", leaderActionsToReexecute);
-          ExecutorUtils.executePreferredLeaderElection(_kafkaZkClient, leaderActionsToReexecute);
+          ExecutorZkUtils.executePreferredLeaderElection(_kafkaZkClient, leaderActionsToReexecute);
         }
       }
     }

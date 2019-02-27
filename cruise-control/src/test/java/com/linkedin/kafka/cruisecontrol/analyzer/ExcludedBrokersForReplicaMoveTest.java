@@ -218,12 +218,12 @@ public class ExcludedBrokersForReplicaMoveTest {
   private boolean violatesExcludedBrokersForReplicaMove(Set<Integer> excludedBrokersForReplicaMove,
                                                         ExecutionProposal proposal) {
     int numOfflineOldReplicas =
-        (int) proposal.oldReplicas().stream().filter(brokerId -> !_clusterModel.broker(brokerId).isAlive()).count();
+        (int) proposal.oldReplicas().stream().filter(r -> !_clusterModel.broker(r.brokerId()).isAlive()).count();
 
     int numNewReplicasOnExcludedBrokers = 0;
     for (int i = 0; i < proposal.newReplicas().size(); i++) {
-      int oldBroker = proposal.oldReplicas().get(i);
-      int newBroker = proposal.newReplicas().get(i);
+      int oldBroker = proposal.oldReplicas().get(i).brokerId();
+      int newBroker = proposal.newReplicas().get(i).brokerId();
       if (oldBroker != newBroker && excludedBrokersForReplicaMove.contains(newBroker)) {
         numNewReplicasOnExcludedBrokers++;
       }

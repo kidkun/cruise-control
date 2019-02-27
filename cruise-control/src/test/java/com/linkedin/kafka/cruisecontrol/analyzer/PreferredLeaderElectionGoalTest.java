@@ -143,8 +143,9 @@ public class PreferredLeaderElectionGoalTest {
       for (int p = 0; p < 3; p++) {
         TopicPartition tp = new TopicPartition(t, p);
         if (originalReplicaDistribution.get(tp).contains(2)) {
-          if (originalLeaderDistribution.get(tp)._brokerId == 2) {
-            List<Integer> replicas = optimizedReplicaDistribution.get(tp).stream().mapToInt(rw -> rw._brokerId).boxed().collect(Collectors.toList());
+          if (originalLeaderDistribution.get(tp).brokerId() == 2) {
+            List<Integer> replicas = optimizedReplicaDistribution.get(tp).stream().mapToInt(ReplicaPlacementInfo::brokerId)
+                                                                 .boxed().collect(Collectors.toList());
             assertEquals("Tp " + tp, 2, replicas.get(replicas.size() - 1).intValue());
           } else {
             assertEquals("Tp " + tp, originalReplicaDistribution.get(tp), optimizedReplicaDistribution.get(tp));
@@ -170,8 +171,9 @@ public class PreferredLeaderElectionGoalTest {
     for (String t : Arrays.asList(TOPIC0, TOPIC1, TOPIC2)) {
       for (int p = 0; p < 3; p++) {
         TopicPartition tp = new TopicPartition(t, p);
-        if (originalLeaderDistribution.get(tp)._brokerId == 0 && t.equals(TOPIC0)) {
-          List<Integer> replicas = optimizedReplicaDistribution.get(tp).stream().mapToInt(rw -> rw._brokerId).boxed().collect(Collectors.toList());
+        if (originalLeaderDistribution.get(tp).brokerId() == 0 && t.equals(TOPIC0)) {
+          List<Integer> replicas = optimizedReplicaDistribution.get(tp).stream().mapToInt(ReplicaPlacementInfo::brokerId)
+                                                               .boxed().collect(Collectors.toList());
           assertEquals("Tp " + tp, 0, replicas.get(replicas.size() - 1).intValue());
         } else {
           assertEquals("Tp " + tp, originalLeaderDistribution.get(tp), optimizedLeaderDistribution.get(tp));

@@ -14,6 +14,7 @@ import java.util.SortedSet;
 import java.util.TreeSet;
 import org.apache.kafka.common.Cluster;
 
+import static com.linkedin.kafka.cruisecontrol.model.ClusterModel.ReplicaPlacementInfo;
 
 /**
  * An abstract class for replica movement strategy. This class will be extended to create custom strategy to determine the
@@ -61,16 +62,15 @@ public abstract class AbstractReplicaMovementStrategy implements ReplicaMovement
       ExecutionProposal proposal = task.proposal();
 
       // Add the task to source broker's execution plan
-      int sourceBroker = proposal.oldLeader();
-      SortedSet<ExecutionTask> sourceBrokerTaskSet = tasksByBrokerId.computeIfAbsent(sourceBroker,
+      SortedSet<ExecutionTask> sourceBrokerTaskSet = tasksByBrokerId.computeIfAbsent(proposal.oldLeader().brokerId(),
                                                                                      k -> new TreeSet<>(taskComparator(cluster)));
       if (!sourceBrokerTaskSet.add(task)) {
         throw new IllegalStateException("Replica movement strategy " + this.getClass().getSimpleName() + " is unable to determine order of all tasks.");
       }
 
       // Add the task to destination brokers' execution plan
-      for (int destinationBroker : proposal.replicasToAdd()) {
-        SortedSet<ExecutionTask> destinationBrokerTaskSet = tasksByBrokerId.computeIfAbsent(destinationBroker,
+      for (ReplicaPlacementInfo destinationBroker : proposal.replicasToAdd()) {
+        SortedSet<ExecutionTask> destinationBrokerTaskSet = tasksByBrokerId.computeIfAbsent(destinationBroker.brokerId(),
                                                                                             k -> new TreeSet<>(taskComparator(cluster)));
         if (!destinationBrokerTaskSet.add(task)) {
           throw new IllegalStateException("Replica movement strategy " + this.getClass().getSimpleName() + " is unable to determine order of all tasks.");

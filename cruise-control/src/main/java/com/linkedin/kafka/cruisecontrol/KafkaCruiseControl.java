@@ -647,10 +647,11 @@ public class KafkaCruiseControl {
    */
   public synchronized AdminResult handleAdminRequest(AdminParameters parameters) {
     String ongoingConcurrencyChangeRequest = "";
-    // 1.1. Change partition concurrency.
+    // 1.1. Change inter-broker partition concurrency.
+    // TODO: add facility to change intra-broker partition concurrency.
     Integer concurrentPartitionMovements = parameters.concurrentPartitionMovements();
     if (concurrentPartitionMovements != null) {
-      _executor.setRequestedPartitionMovementConcurrency(concurrentPartitionMovements);
+      _executor.setRequestedInterBrokerPartitionMovementConcurrency(concurrentPartitionMovements);
       ongoingConcurrencyChangeRequest += String.format("Partition movement concurrency is set to %d%n", concurrentPartitionMovements);
       LOG.warn("Partition movement concurrency is set to: {} by user.", concurrentPartitionMovements);
     }
@@ -855,7 +856,7 @@ public class KafkaCruiseControl {
     // Set the execution mode, add execution proposals, and start execution.
     _executor.setExecutionMode(isKafkaAssignerMode);
     _executor.executeProposals(proposals, unthrottledBrokers, null, _loadMonitor, concurrentPartitionMovements,
-                               concurrentLeaderMovements, replicaMovementStrategy, uuid);
+                               0, concurrentLeaderMovements, replicaMovementStrategy, uuid);
   }
 
   /**
@@ -883,8 +884,8 @@ public class KafkaCruiseControl {
     // Set the execution mode, add execution proposals, and start execution.
     _executor.setExecutionMode(isKafkaAssignerMode);
     _executor.executeProposals(proposals, throttleDecommissionedBroker ? Collections.emptyList() : removedBrokers,
-                               removedBrokers, _loadMonitor, concurrentPartitionMovements, concurrentLeaderMovements,
-                               replicaMovementStrategy, uuid);
+                               removedBrokers, _loadMonitor, concurrentPartitionMovements, 0,
+                               concurrentLeaderMovements, replicaMovementStrategy, uuid);
   }
 
   /**

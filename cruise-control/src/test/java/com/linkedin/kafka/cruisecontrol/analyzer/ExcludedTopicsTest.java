@@ -266,10 +266,10 @@ public class ExcludedTopicsTest {
 
         for (ExecutionProposal proposal : goalProposals) {
           if (excludedTopics.contains(proposal.topic())) {
-            for (int brokerId : proposal.replicasToRemove()) {
-              if (_clusterModel.broker(brokerId).isAlive()) {
+            for (ReplicaPlacementInfo r : proposal.replicasToRemove()) {
+              if (_clusterModel.broker(r.brokerId()).isAlive()) {
                 fail(String.format("Proposal %s contains excluded topic %s, but the broker %d is still alive.",
-                                   proposal, proposal.topic(), brokerId));
+                                   proposal, proposal.topic(), r.brokerId()));
               }
             }
           }

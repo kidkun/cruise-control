@@ -43,10 +43,10 @@ import static com.linkedin.kafka.cruisecontrol.common.TestConstants.TOPIC3;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
+import static com.linkedin.kafka.cruisecontrol.model.ClusterModel.ReplicaPlacementInfo;
 
 
 public class ExecutorTest extends CCKafkaIntegrationTestHarness {
-  private static final long ZK_UTILS_CLOSE_TIMEOUT_MS = 10000L;
   private static final int PARTITION = 0;
   private static final TopicPartition TP0 = new TopicPartition(TOPIC0, PARTITION);
   private static final TopicPartition TP1 = new TopicPartition(TOPIC1, PARTITION);
@@ -80,14 +80,18 @@ public class ExecutorTest extends CCKafkaIntegrationTestHarness {
       int initialLeader1 = topicDescriptions.get(TOPIC1).partitions().get(0).leader().id();
 
       ExecutionProposal proposal0 =
-          new ExecutionProposal(TP0, 0, initialLeader0,
-                                Collections.singletonList(initialLeader0),
-                                Collections.singletonList(initialLeader0 == 0 ? 1 : 0));
+          new ExecutionProposal(TP0, 0, new ReplicaPlacementInfo(initialLeader0),
+                                Collections.singletonList(new ReplicaPlacementInfo(initialLeader0)),
+                                Collections.singletonList(initialLeader0 == 0 ? new ReplicaPlacementInfo(1) :
+                                                                                new ReplicaPlacementInfo(0)));
       ExecutionProposal proposal1 =
-          new ExecutionProposal(TP1, 0, initialLeader1,
-                                Arrays.asList(initialLeader1, initialLeader1 == 0 ? 1 : 0),
-                                Arrays.asList(initialLeader1 == 0 ? 1 : 0, initialLeader1));
-
+          new ExecutionProposal(TP1, 0, new ReplicaPlacementInfo(initialLeader1),
+                               Arrays.asList(new ReplicaPlacementInfo(initialLeader1),
+                                             initialLeader1 == 0 ? new ReplicaPlacementInfo(1) :
+                                                                   new ReplicaPlacementInfo(0)),
+                               Arrays.asList(initialLeader1 == 0 ? new ReplicaPlacementInfo(1) :
+                                                                   new ReplicaPlacementInfo(0),
+                                             new ReplicaPlacementInfo(initialLeader1)));
       Collection<ExecutionProposal> proposals = Arrays.asList(proposal0, proposal1);
       executeAndVerifyProposals(kafkaZkClient, proposals, proposals);
     } finally {
@@ -106,21 +110,31 @@ public class ExecutorTest extends CCKafkaIntegrationTestHarness {
       int initialLeader1 = topicDescriptions.get(TOPIC1).partitions().get(0).leader().id();
 
       ExecutionProposal proposal0 =
-          new ExecutionProposal(TP0, 0, initialLeader0,
-                                Collections.singletonList(initialLeader0),
-                                Collections.singletonList(initialLeader0 == 0 ? 1 : 0));
+          new ExecutionProposal(TP0, 0, new ReplicaPlacementInfo(initialLeader0),
+                                Collections.singletonList(new ReplicaPlacementInfo(initialLeader0)),
+                                Collections.singletonList(initialLeader0 == 0 ? new ReplicaPlacementInfo(1) :
+                                                                                new ReplicaPlacementInfo(0)));
       ExecutionProposal proposal1 =
-          new ExecutionProposal(TP1, 0, initialLeader1,
-                                Arrays.asList(initialLeader1, initialLeader1 == 0 ? 1 : 0),
-                                Arrays.asList(initialLeader1 == 0 ? 1 : 0, initialLeader1));
+          new ExecutionProposal(TP1, 0, new ReplicaPlacementInfo(initialLeader1),
+                                Arrays.asList(new ReplicaPlacementInfo(initialLeader1),
+                                              initialLeader1 == 0 ? new ReplicaPlacementInfo(1) :
+                                                                    new ReplicaPlacementInfo(0)),
+                                Arrays.asList(initialLeader1 == 0 ? new ReplicaPlacementInfo(1) :
+                                                                    new ReplicaPlacementInfo(0),
+                                              new ReplicaPlacementInfo(initialLeader1)));
       ExecutionProposal proposal2 =
-          new ExecutionProposal(TP2, 0, initialLeader0,
-                                Collections.singletonList(initialLeader0),
-                                Collections.singletonList(initialLeader0 == 0 ? 1 : 0));
+          new ExecutionProposal(TP2, 0, new ReplicaPlacementInfo(initialLeader0),
+                                Collections.singletonList(new ReplicaPlacementInfo(initialLeader0)),
+                                Collections.singletonList(initialLeader0 == 0 ? new ReplicaPlacementInfo(1) :
+                                                                                new ReplicaPlacementInfo(0)));
       ExecutionProposal proposal3 =
-          new ExecutionProposal(TP3, 0, initialLeader1,
-                                Arrays.asList(initialLeader1, initialLeader1 == 0 ? 1 : 0),
-                                Arrays.asList(initialLeader1 == 0 ? 1 : 0, initialLeader1));
+          new ExecutionProposal(TP3, 0, new ReplicaPlacementInfo(initialLeader1),
+                                Arrays.asList(new ReplicaPlacementInfo(initialLeader1),
+                                              initialLeader1 == 0 ? new ReplicaPlacementInfo(1) :
+                                                                    new ReplicaPlacementInfo(0)),
+                                Arrays.asList(initialLeader1 == 0 ? new ReplicaPlacementInfo(1) :
+                                                                    new ReplicaPlacementInfo(0),
+                                              new ReplicaPlacementInfo(initialLeader1)));
 
       Collection<ExecutionProposal> proposalsToExecute = Arrays.asList(proposal0, proposal1, proposal2, proposal3);
       Collection<ExecutionProposal> proposalsToCheck = Arrays.asList(proposal0, proposal1);
@@ -142,20 +156,25 @@ public class ExecutorTest extends CCKafkaIntegrationTestHarness {
 
       _brokers.get(initialLeader0 == 0 ? 1 : 0).shutdown();
       ExecutionProposal proposal0 =
-          new ExecutionProposal(TP0, 0, initialLeader0,
-                                Collections.singletonList(initialLeader0),
-                                Collections.singletonList(initialLeader0 == 0 ? 1 : 0));
+          new ExecutionProposal(TP0, 0, new ReplicaPlacementInfo(initialLeader0),
+                                Collections.singletonList(new ReplicaPlacementInfo(initialLeader0)),
+                                Collections.singletonList(initialLeader0 == 0 ? new ReplicaPlacementInfo(1) :
+                                                                                new ReplicaPlacementInfo(0)));
       ExecutionProposal proposal1 =
-          new ExecutionProposal(TP1, 0, initialLeader1,
-                                Arrays.asList(initialLeader1, initialLeader1 == 0 ? 1 : 0),
-                                Arrays.asList(initialLeader1 == 0 ? 1 : 0, initialLeader1));
+          new ExecutionProposal(TP1, 0, new ReplicaPlacementInfo(initialLeader1),
+                                Arrays.asList(new ReplicaPlacementInfo(initialLeader1),
+                                              initialLeader1 == 0 ? new ReplicaPlacementInfo(1) :
+                                                                    new ReplicaPlacementInfo(0)),
+                                Arrays.asList(initialLeader1 == 0 ? new ReplicaPlacementInfo(1) :
+                                                                    new ReplicaPlacementInfo(0),
+                                              new ReplicaPlacementInfo(initialLeader1)));
 
       Collection<ExecutionProposal> proposalsToExecute = Arrays.asList(proposal0, proposal1);
       executeAndVerifyProposals(kafkaZkClient, proposalsToExecute, Collections.emptyList());
 
       // We are not doing the rollback.
       assertEquals(Collections.singletonList(initialLeader0 == 0 ? 1 : 0),
-                   ExecutorUtils.newAssignmentForPartition(kafkaZkClient, TP0));
+                   ExecutorZkUtils.newAssignmentForPartition(kafkaZkClient, TP0));
       assertEquals(initialLeader0, kafkaZkClient.getLeaderForPartition(new TopicPartition(TOPIC1, PARTITION)).get());
     } finally {
       KafkaCruiseControlUtils.closeKafkaZkClientWithTimeout(kafkaZkClient);
@@ -168,7 +187,9 @@ public class ExecutorTest extends CCKafkaIntegrationTestHarness {
     // The proposal tries to move the leader. We fake the replica list to be unchanged so there is no replica
     // movement, but only leader movement.
     ExecutionProposal proposal =
-        new ExecutionProposal(TP1, 0, 1, Arrays.asList(0, 1), Arrays.asList(0, 1));
+        new ExecutionProposal(TP1, 0, new ReplicaPlacementInfo(1),
+                              Arrays.asList(new ReplicaPlacementInfo(0), new ReplicaPlacementInfo(1)),
+                              Arrays.asList(new ReplicaPlacementInfo(0), new ReplicaPlacementInfo(1)));
 
     KafkaCruiseControlConfig configs = new KafkaCruiseControlConfig(getExecutorProperties());
     Time time = new MockTime();
@@ -197,13 +218,14 @@ public class ExecutorTest extends CCKafkaIntegrationTestHarness {
                               null,
                               null,
                               null,
+                              null,
                               "random-uuid");
     // Wait until the execution to start so the task timestamp is set to time.milliseconds.
     while (executor.state().state() != ExecutorState.State.LEADER_MOVEMENT_TASK_IN_PROGRESS) {
       Thread.sleep(10);
     }
     // Sleep over 180000 (the hard coded timeout)
-    time.sleep(180001);
+    time.sleep(200000);
     // The execution should finish.
     waitUntilExecutionFinishes(executor);
   }
@@ -255,7 +277,7 @@ public class ExecutorTest extends CCKafkaIntegrationTestHarness {
     Executor executor = new Executor(configs, new SystemTime(), new MetricRegistry(), 86400000L, 43200000L);
     executor.setExecutionMode(false);
     executor.executeProposals(proposalsToExecute, Collections.emptySet(), null, EasyMock.mock(LoadMonitor.class), null,
-                              null, null, "random-uuid");
+                              null, null, null, "random-uuid");
 
     Map<TopicPartition, Integer> replicationFactors = new HashMap<>();
     for (ExecutionProposal proposal : proposalsToCheck) {
@@ -273,13 +295,13 @@ public class ExecutorTest extends CCKafkaIntegrationTestHarness {
                    expectedReplicationFactor, kafkaZkClient.getReplicasForPartition(tp).size());
 
       if (proposal.hasReplicaAction()) {
-        for (int brokerId : proposal.newReplicas()) {
+        for (ReplicaPlacementInfo r : proposal.newReplicas()) {
           assertTrue("The partition should have moved for " + tp,
-                     kafkaZkClient.getReplicasForPartition(tp).contains(brokerId));
+                     kafkaZkClient.getReplicasForPartition(tp).contains(r.brokerId()));
         }
       }
       assertEquals("The leader should have moved for " + tp,
-                   proposal.newLeader(), kafkaZkClient.getLeaderForPartition(tp).get());
+                   proposal.newLeader().brokerId(), kafkaZkClient.getLeaderForPartition(tp).get());
 
     }
   }
@@ -306,7 +328,7 @@ public class ExecutorTest extends CCKafkaIntegrationTestHarness {
     props.setProperty(KafkaCruiseControlConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers());
     props.setProperty(KafkaCruiseControlConfig.METRIC_SAMPLER_CLASS_CONFIG, NoopSampler.class.getName());
     props.setProperty(KafkaCruiseControlConfig.ZOOKEEPER_CONNECT_CONFIG, zookeeper().connectionString());
-    props.setProperty(KafkaCruiseControlConfig.NUM_CONCURRENT_PARTITION_MOVEMENTS_PER_BROKER_CONFIG, "10");
+    props.setProperty(KafkaCruiseControlConfig.NUM_CONCURRENT_INTER_BROKER_PARTITION_MOVEMENTS_PER_BROKER_CONFIG, "10");
     props.setProperty(KafkaCruiseControlConfig.EXECUTION_PROGRESS_CHECK_INTERVAL_MS_CONFIG, "1000");
     props.setProperty(
         KafkaCruiseControlConfig.DEFAULT_GOALS_CONFIG,

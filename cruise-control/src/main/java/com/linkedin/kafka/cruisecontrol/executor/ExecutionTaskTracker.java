@@ -4,51 +4,171 @@
 
 package com.linkedin.kafka.cruisecontrol.executor;
 
+import com.codahale.metrics.Gauge;
+import com.codahale.metrics.MetricRegistry;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.apache.kafka.common.utils.Time;
 
+import static com.linkedin.kafka.cruisecontrol.executor.ExecutionTask.TaskType;
+import static com.linkedin.kafka.cruisecontrol.executor.ExecutionTask.State;
 
 /**
- * A class for tracking the (1) dead tasks, (2) aborting/aborted tasks, (3) in progress tasks, and (4) pending proposals.
+ * A class for tracking the (1) dead tasks, (2) aborting/aborted tasks, (3) in progress tasks, and (4) pending tasks.
  *
  * This class is not thread-safe.
  */
 public class ExecutionTaskTracker {
-  private final Map<ExecutionTask.State, Set<ExecutionTask>> _replicaActionTasks;
-  private final Map<ExecutionTask.State, Set<ExecutionTask>> _leaderActionTasks;
+  private final Map<TaskType, Map<State, Set<ExecutionTask>>> _tasksByType;
+
+  private long _remainingInterBrokerDataToMoveInMB;
+  private long _remainingIntraBrokerDataToMoveInMB;
+  private long _inExecutionInterBrokerDataMovementInMB;
+  private long _inExecutionIntraBrokerDataMovementInMB;
+  private long _finishedInterBrokerDataMovementInMB;
+  private long _finishedIntraBrokerDataMovementInMB;
   private boolean _isKafkaAssignerMode;
+  private final Time _time;
 
-  ExecutionTaskTracker() {
-    List<ExecutionTask.State> states = ExecutionTask.State.cachedValues();
-    _replicaActionTasks = new HashMap<>(states.size());
-    _leaderActionTasks = new HashMap<>(states.size());
+  private static final String INTER_BROKER_REPLICA_ACTION = "inter-broker-replica-action";
+  private static final String INTRA_BROKER_REPLICA_ACTION = "intra-broker-replica-action";
+  private static final String LEADERSHIP_ACTION = "leadership-action";
+  private static final String IN_PROGRESS = "in-progress";
+  private static final String PENDING = "pending";
+  private static final String ABORTING = "aborting";
+  private static final String ABORTED = "aborted";
+  private static final String DEAD = "dead";
+  private static final String COMPLETED = "completed";
+  private static final String GAUGE_ONGOING_EXECUTION_IN_KAFKA_ASSIGNER_MODE = "ongoing-execution-kafka_assigner";
+  private static final String GAUGE_ONGOING_EXECUTION_IN_NON_KAFKA_ASSIGNER_MODE = "ongoing-execution-non_kafka_assigner";
 
-    for (ExecutionTask.State state : states) {
-      _replicaActionTasks.put(state, new HashSet<>());
-      _leaderActionTasks.put(state, new HashSet<>());
+  ExecutionTaskTracker(MetricRegistry dropwizardMetricRegistry, Time time) {
+    List<State> states = State.cachedValues();
+    List<TaskType> taskTypes = TaskType.cachedValues();
+    _tasksByType = new HashMap<>(taskTypes.size());
+    for (TaskType type : taskTypes) {
+      Map<State, Set<ExecutionTask>> taskMap = new HashMap<>(states.size());
+      for (State state : states) {
+        taskMap.put(state, new HashSet<>());
+      }
+      _tasksByType.put(type, taskMap);
     }
+    _remainingInterBrokerDataToMoveInMB = 0L;
+    _remainingIntraBrokerDataToMoveInMB = 0L;
+    _inExecutionInterBrokerDataMovementInMB = 0L;
+    _inExecutionIntraBrokerDataMovementInMB = 0L;
+    _finishedInterBrokerDataMovementInMB = 0L;
+    _finishedIntraBrokerDataMovementInMB = 0L;
     _isKafkaAssignerMode = false;
+    _time = time;
+
+    // Register gauge sensors.
+    registerGaugeSensors(dropwizardMetricRegistry);
+  }
+
+  private void registerGaugeSensors(MetricRegistry dropwizardMetricRegistry) {
+    String metricName = "Executor";
+    for (TaskType type : TaskType.cachedValues()) {
+      for (State state : State.cachedValues()) {
+        String typeString =  type == TaskType.INTER_BROKER_REPLICA_ACTION ? INTER_BROKER_REPLICA_ACTION :
+                             type == TaskType.INTRA_BROKER_REPLICA_ACTION ? INTRA_BROKER_REPLICA_ACTION :
+                                                                            LEADERSHIP_ACTION;
+        String stateString =  state == State.PENDING     ? PENDING :
+                              state == State.IN_PROGRESS ? IN_PROGRESS :
+                              state == State.ABORTING    ? ABORTING :
+                              state == State.ABORTED     ? ABORTED :
+                              state == State.COMPLETED   ? COMPLETED :
+                                                           DEAD;
+      dropwizardMetricRegistry.register(MetricRegistry.name(metricName, typeString + "-" + stateString),
+                                        (Gauge<Integer>) () -> _tasksByType.get(type).get(state).size());
+      }
+    }
+    dropwizardMetricRegistry.register(MetricRegistry.name(metricName, GAUGE_ONGOING_EXECUTION_IN_KAFKA_ASSIGNER_MODE),
+                                      (Gauge<Integer>) () -> _isKafkaAssignerMode &&
+                                                            !_tasksByType.get(TaskType.INTER_BROKER_REPLICA_ACTION)
+                                                                         .get(State.IN_PROGRESS).isEmpty() ? 1 : 0);
+    dropwizardMetricRegistry.register(MetricRegistry.name(metricName, GAUGE_ONGOING_EXECUTION_IN_NON_KAFKA_ASSIGNER_MODE),
+                                      (Gauge<Integer>) () -> !_isKafkaAssignerMode &&
+                                                             !_tasksByType.get(TaskType.INTER_BROKER_REPLICA_ACTION)
+                                                                          .get(State.IN_PROGRESS).isEmpty() ? 1 : 0);
   }
 
   /**
-   * Get the execution task with replica action set with the given task state.
-   * @param taskState the task state to get the execution task for.
-   * @return the replica action execution task set with the given task state.
+   * Update the execution state of the task.
+   *
+   * @param task The task to update.
+   * @param newState New execution state of the task.
    */
-  public Set<ExecutionTask> taskForReplicaAction(ExecutionTask.State taskState) {
-    return _replicaActionTasks.get(taskState);
+  public void markTaskState(ExecutionTask task, State newState) {
+    _tasksByType.get(task.type()).get(task.state()).remove(task);
+    switch (newState) {
+      case PENDING:
+        break; // Let it go.
+      case IN_PROGRESS:
+        task.inProgress(_time.milliseconds());
+        updateDataMovement(task);
+        break;
+      case ABORTING:
+        task.abort();
+        break;
+      case ABORTED:
+        task.aborted(_time.milliseconds());
+        updateDataMovement(task);
+        break;
+      case COMPLETED:
+        task.completed(_time.milliseconds());
+        updateDataMovement(task);
+        break;
+      case DEAD:
+        task.kill(_time.milliseconds());
+        updateDataMovement(task);
+        break;
+      default:
+        break;
+    }
+    _tasksByType.get(task.type()).get(newState).add(task);
+  }
+
+  private void updateDataMovement(ExecutionTask task) {
+    long dataToMove = task.type() == TaskType.INTRA_BROKER_REPLICA_ACTION ? task.proposal().intraBrokerDataToMoveInMB() :
+                      task.type() == TaskType.INTER_BROKER_REPLICA_ACTION ? task.proposal().interBrokerDataToMoveInMB() :
+                                                                            0;
+    if (task.state() == State.IN_PROGRESS) {
+      if (task.type() == TaskType.INTRA_BROKER_REPLICA_ACTION) {
+        _remainingIntraBrokerDataToMoveInMB -= dataToMove;
+        _inExecutionIntraBrokerDataMovementInMB += dataToMove;
+      } else if (task.type() == TaskType.INTER_BROKER_REPLICA_ACTION) {
+        _remainingInterBrokerDataToMoveInMB -= dataToMove;
+        _inExecutionInterBrokerDataMovementInMB += dataToMove;
+      }
+    } else if (task.state() == State.ABORTED || task.state() == State.DEAD || task.state() == State.COMPLETED) {
+      if (task.type() == TaskType.INTRA_BROKER_REPLICA_ACTION) {
+        _inExecutionIntraBrokerDataMovementInMB -= dataToMove;
+        _finishedIntraBrokerDataMovementInMB += dataToMove;
+      } else if (task.type() == TaskType.INTER_BROKER_REPLICA_ACTION) {
+        _inExecutionInterBrokerDataMovementInMB -= dataToMove;
+        _finishedInterBrokerDataMovementInMB += dataToMove;
+      }
+    }
   }
 
   /**
-   * Get the execution task with leader action set with the given task state.
-   * @param taskState the task state to get the execution task for.
-   * @return the leader action execution task set with the given task state.
+   * Add new tasks to ExecutionTaskTracker to track their execution state.
+   *
+   * @param tasks    New tasks to add.
+   * @param taskType Task type of new tasks.
    */
-  public Set<ExecutionTask> taskForLeaderAction(ExecutionTask.State taskState) {
-    return _replicaActionTasks.get(taskState);
+  public void initializeTask(Collection<ExecutionTask> tasks, TaskType taskType) {
+    _tasksByType.get(taskType).get(State.PENDING).addAll(tasks);
+    if (taskType == TaskType.INTER_BROKER_REPLICA_ACTION) {
+      _remainingInterBrokerDataToMoveInMB += tasks.stream().mapToLong(t -> t.proposal().interBrokerDataToMoveInMB()).sum();
+    } else if (taskType == TaskType.INTRA_BROKER_REPLICA_ACTION) {
+      _remainingIntraBrokerDataToMoveInMB += tasks.stream().mapToLong(t -> t.proposal().intraBrokerDataToMoveInMB()).sum();
+    }
   }
 
   /**
@@ -61,70 +181,187 @@ public class ExecutionTaskTracker {
   }
 
   /**
-   * Get all the in progress execution tasks.
+   * Get the statistic of task execution state.
+   *
+   * @return The statistic of task execution state.
    */
-  public Set<ExecutionTask> tasksInState(ExecutionTask.State state) {
-    Set<ExecutionTask> tasksInProgress = new HashSet<>();
-    tasksInProgress.addAll(_replicaActionTasks.get(state));
-    tasksInProgress.addAll(_leaderActionTasks.get(state));
-    return tasksInProgress;
+  private Map<TaskType, Map<State, Integer>> taskStat() {
+    Map<TaskType, Map<State, Integer>> taskStatMap = new HashMap<>(TaskType.values().length);
+    for (TaskType type : TaskType.values()) {
+      taskStatMap.put(type, new HashMap<>());
+      _tasksByType.get(type).forEach((k, v) -> taskStatMap.get(type).put(k, v.size()));
+    }
+    return taskStatMap;
   }
 
-  public int numDeadReplicaAction() {
-    return _replicaActionTasks.get(ExecutionTask.State.DEAD).size();
-  }
-
-  public int numDeadLeadershipAction() {
-    return _leaderActionTasks.get(ExecutionTask.State.DEAD).size();
-  }
-
-  public int numAbortingReplicaAction() {
-    return _replicaActionTasks.get(ExecutionTask.State.ABORTING).size();
-  }
-
-  public int numAbortingLeadershipAction() {
-    return _leaderActionTasks.get(ExecutionTask.State.ABORTING).size();
-  }
-
-  public int numAbortedReplicaAction() {
-    return _replicaActionTasks.get(ExecutionTask.State.ABORTED).size();
-  }
-
-  public int numAbortedLeadershipAction() {
-    return _leaderActionTasks.get(ExecutionTask.State.ABORTED).size();
-  }
-
-  public int numInProgressReplicaAction() {
-    return _replicaActionTasks.get(ExecutionTask.State.IN_PROGRESS).size();
-  }
-
-  public int isOngoingExecutionInKafkaAssignerMode() {
-    // 1: execution in progress, 0 otherwise
-    return _isKafkaAssignerMode && !_replicaActionTasks.get(ExecutionTask.State.IN_PROGRESS).isEmpty() ? 1 : 0;
-  }
-
-  public int isOngoingExecutionInNonKafkaAssignerMode() {
-    // 1: execution in progress, 0 otherwise
-    return !_isKafkaAssignerMode && !_replicaActionTasks.get(ExecutionTask.State.IN_PROGRESS).isEmpty() ? 1 : 0;
-  }
-
-  public int numInProgressLeadershipAction() {
-    return _leaderActionTasks.get(ExecutionTask.State.IN_PROGRESS).size();
-  }
-
-  public int numPendingReplicaAction() {
-    return _replicaActionTasks.get(ExecutionTask.State.PENDING).size();
-  }
-
-  public int numPendingLeadershipAction() {
-    return _leaderActionTasks.get(ExecutionTask.State.PENDING).size();
+  /**
+   * Get a snapshot of task execution state.
+   * @param taskTypesToGetSnapshot Task type to populate snapshot.
+   * @param inExecutionOnly        Whether only populate in-progress and aborting tasks.
+   * @return                       A snapshot of task execution state.
+   */
+  private Map<TaskType, Map<State, Set<ExecutionTask>>> taskSnapshot(List<TaskType> taskTypesToGetSnapshot,
+                                                                     boolean inExecutionOnly) {
+    Map<TaskType, Map<State, Set<ExecutionTask>>> taskSnapshot = new HashMap<>(taskTypesToGetSnapshot.size());
+    for (TaskType type : taskTypesToGetSnapshot) {
+      taskSnapshot.put(type, new HashMap<>());
+      _tasksByType.get(type).forEach((k, v) -> {
+        if (!inExecutionOnly || k == State.IN_PROGRESS || k == State.ABORTING) {
+          taskSnapshot.get(type).put(k, new HashSet<>(v));
+        }
+      });
+    }
+    return taskSnapshot;
   }
 
   /**
    * Clear the replica action and leader action tasks.
    */
   public void clear() {
-    _replicaActionTasks.values().forEach(Set::clear);
-    _leaderActionTasks.values().forEach(Set::clear);
+    _tasksByType.values().forEach(m -> m.values().forEach(Set::clear));
+    _remainingInterBrokerDataToMoveInMB = 0L;
+    _remainingIntraBrokerDataToMoveInMB = 0L;
+    _inExecutionInterBrokerDataMovementInMB = 0L;
+    _inExecutionIntraBrokerDataMovementInMB = 0L;
+    _finishedInterBrokerDataMovementInMB = 0L;
+    _finishedIntraBrokerDataMovementInMB = 0L;
+  }
+
+  // Internal query APIs.
+  public int numRemainingInterBrokerPartitionMovements() {
+    return _tasksByType.get(TaskType.INTER_BROKER_REPLICA_ACTION).get(State.PENDING).size();
+  }
+
+  public long remainingInterBrokerDataToMoveInMB() {
+    return _remainingInterBrokerDataToMoveInMB;
+  }
+
+  public int numFinishedInterBrokerPartitionMovements() {
+    return _tasksByType.get(TaskType.INTER_BROKER_REPLICA_ACTION).get(State.COMPLETED).size() +
+           _tasksByType.get(TaskType.INTER_BROKER_REPLICA_ACTION).get(State.DEAD).size() +
+           _tasksByType.get(TaskType.INTER_BROKER_REPLICA_ACTION).get(State.ABORTED).size();
+  }
+
+  public long finishedInterBrokerDataMovementInMB() {
+    return _finishedInterBrokerDataMovementInMB;
+  }
+
+  public Set<ExecutionTask> inExecutionTasks(Collection<TaskType> types) {
+    Set<ExecutionTask> inExecutionTasks = new HashSet<>();
+    for (TaskType type : types) {
+      inExecutionTasks.addAll(_tasksByType.get(type).get(State.IN_PROGRESS));
+      inExecutionTasks.addAll(_tasksByType.get(type).get(State.ABORTING));
+    }
+    return inExecutionTasks;
+  }
+
+  public long inExecutionInterBrokerDataMovementInMB() {
+    return _inExecutionInterBrokerDataMovementInMB;
+  }
+
+  public int numRemainingLeadershipMovements() {
+    return _tasksByType.get(TaskType.LEADER_ACTION).get(State.PENDING).size();
+  }
+
+  public int numFinishedLeadershipMovements() {
+    return _tasksByType.get(TaskType.LEADER_ACTION).get(State.COMPLETED).size() +
+           _tasksByType.get(TaskType.LEADER_ACTION).get(State.DEAD).size() +
+           _tasksByType.get(TaskType.LEADER_ACTION).get(State.ABORTED).size();
+  }
+
+  public int numRemainingIntraBrokerPartitionMovements() {
+    return  _tasksByType.get(TaskType.INTRA_BROKER_REPLICA_ACTION).get(State.PENDING).size();
+  }
+
+  public long remainingIntraBrokerDataToMoveInMB() {
+    return _remainingIntraBrokerDataToMoveInMB;
+  }
+
+  public int numFinishedIntraBrokerPartitionMovements() {
+    return  _tasksByType.get(TaskType.INTRA_BROKER_REPLICA_ACTION).get(State.COMPLETED).size() +
+            _tasksByType.get(TaskType.INTRA_BROKER_REPLICA_ACTION).get(State.DEAD).size() +
+            _tasksByType.get(TaskType.INTRA_BROKER_REPLICA_ACTION).get(State.ABORTED).size();
+  }
+
+  public long finishedIntraBrokerDataToMoveInMB() {
+    return _finishedIntraBrokerDataMovementInMB;
+  }
+
+  public long inExecutionIntraBrokerDataMovementInMB() {
+    return _inExecutionIntraBrokerDataMovementInMB;
+  }
+
+
+  public ExecutionTasksSummary getExecutionTasksSummary(List<TaskType> taskTypesToGetSnapshot, boolean inExecutionOnly) {
+    return new ExecutionTasksSummary(_finishedInterBrokerDataMovementInMB,
+                                     _finishedIntraBrokerDataMovementInMB,
+                                     _inExecutionInterBrokerDataMovementInMB,
+                                     _inExecutionIntraBrokerDataMovementInMB,
+                                     _remainingInterBrokerDataToMoveInMB,
+                                     _remainingIntraBrokerDataToMoveInMB,
+                                     taskStat(),
+                                     taskSnapshot(taskTypesToGetSnapshot, inExecutionOnly)
+                                     );
+  }
+
+  public static class ExecutionTasksSummary {
+    private long _finishedInterBrokerDataMovementInMB;
+    private long _finishedIntraBrokerDataMovementInMB;
+    private long _inExecutionInterBrokerDataMovementInMB;
+    private long _inExecutionIntraBrokerDataMovementInMB;
+    private final long _remainingInterBrokerDataToMoveInMB;
+    private final long _remainingIntraBrokerDataToMoveInMB;
+    private Map<ExecutionTask.TaskType, Map<ExecutionTask.State, Integer>> _taskStat;
+    private Map<ExecutionTask.TaskType, Map<ExecutionTask.State, Set<ExecutionTask>>> _taskSnapshot;
+
+    ExecutionTasksSummary(long finishedInterBrokerDataMovementInMB,
+                          long finishedIntraBrokerDataMovementInMB,
+                          long inExecutionInterBrokerDataMovementInMB,
+                          long inExecutionIntraBrokerDataMovementInMB,
+                          long remainingInterBrokerDataToMoveInMB,
+                          long remainingIntraBrokerDataToMoveInMB,
+                          Map<ExecutionTask.TaskType, Map<ExecutionTask.State, Integer>> taskStat,
+                          Map<ExecutionTask.TaskType, Map<ExecutionTask.State, Set<ExecutionTask>>> taskSnapshot) {
+      _finishedInterBrokerDataMovementInMB = finishedInterBrokerDataMovementInMB;
+      _finishedIntraBrokerDataMovementInMB = finishedIntraBrokerDataMovementInMB;
+      _inExecutionInterBrokerDataMovementInMB = inExecutionInterBrokerDataMovementInMB;
+      _inExecutionIntraBrokerDataMovementInMB = inExecutionIntraBrokerDataMovementInMB;
+      _remainingInterBrokerDataToMoveInMB = remainingInterBrokerDataToMoveInMB;
+      _remainingIntraBrokerDataToMoveInMB = remainingIntraBrokerDataToMoveInMB;
+      _taskStat = taskStat;
+      _taskSnapshot = taskSnapshot;
+    }
+
+    public long finishedInterBrokerDataMovementInMB() {
+      return _finishedInterBrokerDataMovementInMB;
+    }
+
+    public long finishedIntraBrokerDataMovementInMB() {
+      return _finishedIntraBrokerDataMovementInMB;
+    }
+
+    public long inExecutionInterBrokerDataMovementInMB() {
+      return _inExecutionInterBrokerDataMovementInMB;
+    }
+
+    public long inExecutionIntraBrokerDataMovementInMB() {
+      return _inExecutionIntraBrokerDataMovementInMB;
+    }
+
+    public long remainingInterBrokerDataToMoveInMB() {
+      return _remainingInterBrokerDataToMoveInMB;
+    }
+
+    public long remainingIntraBrokerDataToMoveInMB() {
+      return _remainingIntraBrokerDataToMoveInMB;
+    }
+
+    public Map<ExecutionTask.TaskType, Map<ExecutionTask.State, Integer>> taskStat() {
+      return _taskStat;
+    }
+
+    public Map<ExecutionTask.TaskType, Map<ExecutionTask.State, Set<ExecutionTask>>> taskSnapshot() {
+      return _taskSnapshot;
+    }
   }
 }

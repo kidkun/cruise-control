@@ -244,8 +244,8 @@ public class ExcludedBrokersForLeadershipTest {
         Set<ExecutionProposal> goalProposals =
             AnalyzerUtils.getDiff(initReplicaDistribution, initLeaderDistribution, _clusterModel);
         for (ExecutionProposal proposal : goalProposals) {
-          if (proposal.hasLeaderAction() && excludedBrokersForLeadership.contains(proposal.newLeader())
-              && _clusterModel.broker(proposal.oldLeader()).isAlive()) {
+          if (proposal.hasLeaderAction() && excludedBrokersForLeadership.contains(proposal.newLeader().brokerId())
+              && _clusterModel.broker(proposal.oldLeader().brokerId()).isAlive()) {
             fail(String.format("Leadership move in %s from an online replica to an excluded broker for leadership %s.",
                                proposal, excludedBrokersForLeadership));
           }

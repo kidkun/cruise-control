@@ -10,9 +10,11 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
 
+import static com.linkedin.kafka.cruisecontrol.model.ClusterModel.ReplicaPlacementInfo;
 
 /**
  * The execution proposal corresponding to a particular partition.
@@ -25,11 +27,15 @@ public class ExecutionProposal {
 
   private final TopicPartition _tp;
   private final long _partitionSize;
-  private final int _oldLeader;
-  private final List<Integer> _oldReplicas;
-  private final List<Integer> _newReplicas;
-  private final Set<Integer> _replicasToAdd;
-  private final Set<Integer> _replicasToRemove;
+  private final ReplicaPlacementInfo _oldLeader;
+  private final List<ReplicaPlacementInfo> _oldReplicas;
+  private final List<ReplicaPlacementInfo> _newReplicas;
+  // Replicas to add are the replicas which are originally not hosted by the broker.
+  private final Set<ReplicaPlacementInfo> _replicasToAdd;
+  // Replicas to remove are the replicas which are no longer hosted by the broker.
+  private final Set<ReplicaPlacementInfo> _replicasToRemove;
+  // Replicas to move are the replicas are originally hosted by the broker and need to relocated to another disk of the hosting broker.
+  private final Map<Integer, ReplicaPlacementInfo> _replicasToMoveByBroker;
 
   /**
    * Construct an execution proposals.
@@ -43,9 +49,9 @@ public class ExecutionProposal {
    */
   public ExecutionProposal(TopicPartition tp,
                            long partitionSize,
-                           int oldLeader,
-                           List<Integer> oldReplicas,
-                           List<Integer> newReplicas) {
+                           ReplicaPlacementInfo oldLeader,
+                           List<ReplicaPlacementInfo> oldReplicas,
+                           List<ReplicaPlacementInfo> newReplicas) {
     _tp = tp;
     _partitionSize = partitionSize;
     _oldLeader = oldLeader;
@@ -53,23 +59,30 @@ public class ExecutionProposal {
     _oldReplicas = oldReplicas == null ? Collections.emptyList() : oldReplicas;
     _newReplicas = newReplicas;
     validate();
-    // Populate added replicas
-    _replicasToAdd = new HashSet<>();
-    _replicasToAdd.addAll(newReplicas);
-    _replicasToAdd.removeAll(_oldReplicas);
-    // Populate removed replicas
-    _replicasToRemove = new HashSet<>();
-    _replicasToRemove.addAll(_oldReplicas);
-    _replicasToRemove.removeAll(newReplicas);
+
+    // Populate replicas to add, to remove and to move across disk.
+    Set<Integer> newBrokerList = _newReplicas.stream().mapToInt(ReplicaPlacementInfo::brokerId).boxed().collect(Collectors.toSet());
+    Set<Integer> oldBrokerList = _oldReplicas.stream().mapToInt(ReplicaPlacementInfo::brokerId).boxed().collect(Collectors.toSet());
+    _replicasToAdd = _newReplicas.stream().filter(r -> !oldBrokerList.contains(r.brokerId())).collect(Collectors.toSet());
+    _replicasToRemove = _oldReplicas.stream().filter(r -> !newBrokerList.contains(r.brokerId())).collect(Collectors.toSet());
+    _replicasToMoveByBroker = new HashMap<>();
+    newReplicas.stream().filter(r -> !_replicasToAdd.contains(r) && !_oldReplicas.contains(r))
+               .forEach(r -> _replicasToMoveByBroker.put(r.brokerId(), r));
+
+    // Verify the proposal will not generate both inter-broker movement and intra-broker replica movement at the same time.
+    if (!_replicasToAdd.isEmpty() && !_replicasToMoveByBroker.isEmpty()) {
+      throw new IllegalArgumentException("Change from " + _oldReplicas + " to " + _newReplicas + " will generate both "
+                                         + "intra-broker and inter-broker replica movements.");
+    }
   }
 
-  private boolean orderMatched(Node[] currentOrderedReplicas, List<Integer> replicas) {
+  private boolean brokerOrderMatched(Node[] currentOrderedReplicas, List<ReplicaPlacementInfo> replicas) {
     if (replicas.size() != currentOrderedReplicas.length) {
       return false;
     }
 
     for (int i = 0; i < replicas.size(); i++) {
-      if (currentOrderedReplicas[i].id() != replicas.get(i)) {
+      if (currentOrderedReplicas[i].id() != replicas.get(i).brokerId()) {
         return false;
       }
     }
@@ -77,25 +90,27 @@ public class ExecutionProposal {
   }
 
   /**
-   * Check whether the successful proposal completion is reflected in the current ordered replicas in the given cluster.
+   * Check whether the successful completion of inter-broker replica movement from this proposal is reflected in the current
+   * ordered replicas in the given cluster.
    *
    * @param currentOrderedReplicas Current ordered replica list from the cluster.
    * @return True if successfully completed, false otherwise.
    */
-  public boolean isCompletedSuccessfully(Node[] currentOrderedReplicas) {
-    return orderMatched(currentOrderedReplicas, _newReplicas);
+  public boolean isInterBrokerMovementCompleted(Node[] currentOrderedReplicas) {
+    return brokerOrderMatched(currentOrderedReplicas, _newReplicas);
   }
 
   /**
-   * Check whether the proposal abortion is reflected in the current ordered replicas in the given cluster.
+   * Check whether the proposal abortion of inter-broker replica movement from this proposal is reflected in the current
+   * ordered replicas in the given cluster.
    * There could be a race condition that when we abort a task, it is already completed.
    * In that case, we treat it as aborted as well.
    *
    * @param currentOrderedReplicas Current ordered replica list from the cluster.
    * @return True if aborted, false otherwise.
    */
-  public boolean isAborted(Node[] currentOrderedReplicas) {
-    return isCompletedSuccessfully(currentOrderedReplicas) || orderMatched(currentOrderedReplicas, _oldReplicas);
+  public boolean isInterBrokerMovementAborted(Node[] currentOrderedReplicas) {
+    return isInterBrokerMovementCompleted(currentOrderedReplicas) || brokerOrderMatched(currentOrderedReplicas, _oldReplicas);
   }
 
   /**
@@ -120,52 +135,52 @@ public class ExecutionProposal {
   }
 
   /**
-   * @return the partition size of the partition this proposal is about.
-   */
-  public long partitionSize() {
-    return _partitionSize;
-  }
-
-  /**
    * @return the old leader of the partition before the executing the proposal.
    */
-  public int oldLeader() {
+  public ReplicaPlacementInfo oldLeader() {
     return _oldLeader;
   }
 
   /**
    * @return the new leader of the partition after executing the proposal.
    */
-  public int newLeader() {
+  public ReplicaPlacementInfo newLeader() {
     return _newReplicas.get(0);
   }
 
   /**
    * @return the replica list of the partition before executing the proposal.
    */
-  public List<Integer> oldReplicas() {
+  public List<ReplicaPlacementInfo> oldReplicas() {
     return _oldReplicas;
   }
 
   /**
    * @return the new replica list fo the partition after executing the proposal.
    */
-  public List<Integer> newReplicas() {
+  public List<ReplicaPlacementInfo> newReplicas() {
     return _newReplicas;
   }
 
   /**
    * @return the replicas that exist in new replica list but not in old replica list.
    */
-  public Set<Integer> replicasToAdd() {
+  public Set<ReplicaPlacementInfo> replicasToAdd() {
     return _replicasToAdd;
   }
 
   /**
    * @return the replicas that exist in old replica list but not in the new replica list.
    */
-  public Set<Integer> replicasToRemove() {
+  public Set<ReplicaPlacementInfo> replicasToRemove() {
     return _replicasToRemove;
+  }
+
+  /**
+   * @return the replicas that exist in both old and new replica list but its hosted disk has changed.
+   */
+  public Map<Integer, ReplicaPlacementInfo> replicasToMoveByBroker() {
+    return _replicasToMoveByBroker;
   }
 
   /**
@@ -183,16 +198,30 @@ public class ExecutionProposal {
   }
 
   /**
+   * @return the total number of bytes to move cross brokers involved in this proposal.
+   */
+  public long interBrokerDataToMoveInMB() {
+    return _replicasToAdd.size() * _partitionSize;
+  }
+
+  /**
+   * @return the total number of bytes to move cross disks within the broker involved in this proposal.
+   */
+  public long intraBrokerDataToMoveInMB() {
+    return  _partitionSize;
+  }
+
+  /**
    * @return the total number of bytes to move involved in this proposal.
    */
   public long dataToMoveInMB() {
-    return _replicasToAdd.size() * _partitionSize;
+    return (_replicasToAdd.size() + _replicasToMoveByBroker.size()) * _partitionSize;
   }
 
   private void validate() {
     // Verify old leader exists.
-    if (_oldLeader >= 0 && !_oldReplicas.contains(_oldLeader)) {
-      throw new IllegalArgumentException(String.format("The old leader %d does not exit in the old replica list %s",
+    if (_oldLeader.brokerId() >= 0 && !_oldReplicas.contains(_oldLeader)) {
+      throw new IllegalArgumentException(String.format("The old leader %s does not exit in the old replica list %s",
                                                        _oldLeader, _oldReplicas));
     }
     // verify empty new replica list.
@@ -200,7 +229,7 @@ public class ExecutionProposal {
       throw new IllegalArgumentException("The new replica list " + _newReplicas + " cannot be empty.");
     }
     // Verify duplicates
-    Set<Integer> checkSet = new HashSet<>(_newReplicas);
+    Set<ReplicaPlacementInfo> checkSet = new HashSet<>(_newReplicas);
     if (checkSet.size() != _newReplicas.size()) {
       throw new IllegalArgumentException("The new replicas list " + _newReplicas + " has duplicate replica.");
     }
@@ -221,7 +250,7 @@ public class ExecutionProposal {
 
   @Override
   public String toString() {
-    return String.format("{%s, oldLeader: %d, %s -> %s}", _tp, _oldLeader, _oldReplicas, _newReplicas);
+    return String.format("{%s, oldLeader: %s, %s -> %s}", _tp, _oldLeader, _oldReplicas, _newReplicas);
   }
 
   @Override
@@ -245,12 +274,12 @@ public class ExecutionProposal {
   @Override
   public int hashCode() {
     int result = _tp.hashCode();
-    result = 31 * result + _oldLeader;
-    for (int broker : _oldReplicas) {
-      result = 31 * result + broker;
+    result = 31 * result + _oldLeader.hashCode();
+    for (ReplicaPlacementInfo replica : _oldReplicas) {
+      result = 31 * result + replica.hashCode();
     }
-    for (int broker : _newReplicas) {
-      result = 31 * broker;
+    for (ReplicaPlacementInfo replica : _newReplicas) {
+      result = 31 * replica.hashCode();
     }
     return result;
   }

@@ -11,13 +11,13 @@ import com.linkedin.kafka.cruisecontrol.executor.ExecutionProposal;
 import com.linkedin.kafka.cruisecontrol.model.ClusterModel;
 
 import com.linkedin.kafka.cruisecontrol.model.RawAndDerivedResource;
+import com.linkedin.kafka.cruisecontrol.model.Replica;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 
-import java.util.stream.Collectors;
 import org.apache.commons.math3.random.MersenneTwister;
 import org.apache.commons.math3.random.RandomGenerator;
 import org.apache.commons.math3.stat.inference.KolmogorovSmirnovTest;
@@ -78,7 +78,7 @@ public class AnalyzerUtils {
       ReplicaPlacementInfo finalLeaderPlacementInfo = new ReplicaPlacementInfo(finalLeader.broker().id(),
                                                                                finalLeader.disk() == null ? null : finalLeader.disk().logDir());
       // The partition has no change.
-      if (finalReplicas.equals(initialReplicas) && initialLeaderDistribution.get(tp) == finalLeaderPlacementInfo) {
+      if (finalReplicas.equals(initialReplicas) && initialLeaderDistribution.get(tp).equals(finalLeaderPlacementInfo)) {
         continue;
       }
       // We need to adjust the final broker list order to ensure the final leader is the first replica.
@@ -88,10 +88,7 @@ public class AnalyzerUtils {
         finalReplicas.set(0, finalLeaderPlacementInfo);
       }
       Double partitionSize = optimizedClusterModel.partition(tp).leader().load().expectedUtilizationFor(Resource.DISK);
-      //TODO: executor logic change to support cross disk replica movement.
-      diff.add(new ExecutionProposal(tp, partitionSize.intValue(), initialLeaderDistribution.get(tp)._brokerId,
-                                     initialReplicas.stream().mapToInt(info -> info._brokerId).boxed().collect(Collectors.toList()),
-                                     finalReplicas.stream().mapToInt(info -> info._brokerId).boxed().collect(Collectors.toList())));
+      diff.add(new ExecutionProposal(tp, partitionSize.intValue(), initialLeaderDistribution.get(tp), initialReplicas, finalReplicas));
     }
     return diff;
   }

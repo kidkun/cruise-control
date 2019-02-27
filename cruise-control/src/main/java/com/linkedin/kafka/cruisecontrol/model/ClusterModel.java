@@ -1213,16 +1213,27 @@ public class ClusterModel implements Serializable {
   }
 
   static public class ReplicaPlacementInfo {
-    public Integer _brokerId;
-    public String _logdir;
+    private Integer _brokerId;
+    private String _logdir;
 
     public ReplicaPlacementInfo(Integer brokerId, String logdir) {
+      if (brokerId == null) {
+        throw new IllegalArgumentException("Broker ID is not provided for ReplicaPlacementInfo.");
+      }
       _brokerId = brokerId;
       _logdir = logdir;
     }
 
     public ReplicaPlacementInfo(Integer brokerId) {
       this(brokerId, null);
+    }
+
+    public Integer brokerId() {
+      return _brokerId;
+    }
+
+    public String logdir() {
+      return _logdir;
     }
 
     @Override
@@ -1237,6 +1248,15 @@ public class ClusterModel implements Serializable {
     @Override
     public int hashCode() {
       return Objects.hash(_brokerId, _logdir);
+    }
+
+    @Override
+    public String toString() {
+      if (_logdir == null) {
+        return _brokerId.toString();
+      } else {
+        return String.format("{Broker: %d, Logdir: %s}", _brokerId, _logdir);
+      }
     }
   }
 }

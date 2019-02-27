@@ -17,8 +17,8 @@ import scala.collection.JavaConversions._
  * This class is a Java interface wrapper of open source ReassignPartitionCommand. This class is needed because
  * scala classes and Java classes are not compatible.
  */
-object ExecutorUtils {
-  val LOG: Logger = LoggerFactory.getLogger(ExecutorUtils.getClass.getName)
+object ExecutorZkUtils {
+  val LOG: Logger = LoggerFactory.getLogger(ExecutorZkUtils.getClass.getName)
 
   /**
    * Add a list of replica reassignment tasks to execute. Replica reassignment indicates tasks that (1) relocate a replica
@@ -36,8 +36,8 @@ object ExecutorUtils {
       val newReplicaAssignment = scala.collection.mutable.Map(inProgressReplicaReassignment.toSeq: _*)
       reassignmentTasks.foreach({ task =>
         val tp = task.proposal.topicPartition()
-        val oldReplicas = asScalaBuffer(task.proposal.oldReplicas()).map(_.toInt)
-        val newReplicas = asScalaBuffer(task.proposal().newReplicas()).map(_.toInt)
+        val oldReplicas = asScalaBuffer(task.proposal.oldReplicas()).map(_.brokerId.toInt)
+        val newReplicas = asScalaBuffer(task.proposal().newReplicas()).map(_.brokerId.toInt)
 
         val inProgressReplicasOpt = newReplicaAssignment.get(tp)
         var addTask = true
