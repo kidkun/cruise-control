@@ -223,6 +223,7 @@ public class IntraBrokerDiskCapacityGoal extends AbstractGoal {
     return new ClusterModelStatsComparator() {
       @Override
       public int compare(ClusterModelStats stats1, ClusterModelStats stats2) {
+        // This goal does not care about stats. The optimization would have already failed if the goal is not met.
         return 0;
       }
 

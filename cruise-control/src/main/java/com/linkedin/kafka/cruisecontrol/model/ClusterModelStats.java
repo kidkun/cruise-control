@@ -410,7 +410,7 @@ public class ClusterModelStats {
       }
     }
     if (diskCount > 0) {
-      _diskUtilizationStDev = Math.sqrt(totalDiskUtilizationVariance) / diskCount;
+      _diskUtilizationStDev = Math.sqrt(totalDiskUtilizationVariance / diskCount);
     }
   }
 }

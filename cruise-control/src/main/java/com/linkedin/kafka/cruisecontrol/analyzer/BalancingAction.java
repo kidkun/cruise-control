@@ -217,6 +217,7 @@ public class BalancingAction {
     proposalMap.put(DESTINATION_BROKER_ID, _destinationBrokerId);
     proposalMap.put(DESTINATION_TOPIC_PARTITION, _destinationTp);
     proposalMap.put(ACTION_TYPE, _actionType);
+    // _sourceBrokerLogdir and _destinationBrokerLogdir are guaranteed to both be null or neither be null.
     if (_sourceBrokerLogdir != null) {
       proposalMap.put(SOURCE_BROKER_LOGDIR, _sourceBrokerLogdir);
       proposalMap.put(DESTINATION_BROKER_LOGIR, _destinationBrokerLogdir);

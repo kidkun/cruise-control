@@ -211,7 +211,7 @@ public class IntraBrokerDiskUsageDistributionGoal extends AbstractGoal {
       return true;
     }
     return false;
-    }
+  }
 
   private boolean isGettingMoreBalanced(Disk sourceDisk, Disk destinationDisk, double sourceUtilizationDelta) {
     double prevDiff = diskUtilizationPercentage(sourceDisk)  - diskUtilizationPercentage(destinationDisk);
@@ -256,6 +256,15 @@ public class IntraBrokerDiskUsageDistributionGoal extends AbstractGoal {
     }
   }
 
+  /**
+   * Try to balance the underloaded disk by moving in replicas from other disks of the same broker.
+   *
+   * @param disk                 The disk to balance.
+   * @param clusterModel         The current cluster model.
+   * @param optimizedGoals       Optimized goals.
+   * @param optimizationOptions  Options to take into account during optimization -- e.g. excluded topics.
+   * @return True if the disk to balance is still underloaded, false otherwise.
+   */
   private boolean rebalanceByMovingLoadIn(Disk disk,
                                           ClusterModel clusterModel,
                                           Set<Goal> optimizedGoals,
@@ -307,6 +316,15 @@ public class IntraBrokerDiskUsageDistributionGoal extends AbstractGoal {
     return true;
   }
 
+  /**
+   * Try to balance the overloaded disk by moving out replicas to other disks of the same broker.
+   *
+   * @param disk                 The disk to balance.
+   * @param clusterModel         The current cluster model.
+   * @param optimizedGoals       Optimized goals.
+   * @param optimizationOptions  Options to take into account during optimization -- e.g. excluded topics.
+   * @return True if the disk to balance is still overloaded, false otherwise.
+   */
   private boolean rebalanceByMovingLoadOut(Disk disk,
                                            ClusterModel clusterModel,
                                            Set<Goal> optimizedGoals,
@@ -358,6 +376,14 @@ public class IntraBrokerDiskUsageDistributionGoal extends AbstractGoal {
     return true;
   }
 
+  /**
+   * Try to balance the overloaded disk by swapping its replicas with replicas from other disks of the same broker.
+   *
+   * @param disk                 The disk to balance.
+   * @param clusterModel         The current cluster model.
+   * @param optimizedGoals       Optimized goals.
+   * @param optimizationOptions  Options to take into account during optimization -- e.g. excluded topics.
+   */
   private void rebalanceBySwappingLoadOut(Disk disk,
                                          ClusterModel clusterModel,
                                          Set<Goal> optimizedGoals,
@@ -417,6 +443,14 @@ public class IntraBrokerDiskUsageDistributionGoal extends AbstractGoal {
     disk.untrackSortedReplicas(name());
   }
 
+  /**
+   * Try to balance the underloaded disk by swapping its replicas with replicas from other disks of the same broker.
+   *
+   * @param disk                 The disk to balance.
+   * @param clusterModel         The current cluster model.
+   * @param optimizedGoals       Optimized goals.
+   * @param optimizationOptions  Options to take into account during optimization -- e.g. excluded topics.
+   */
   private void rebalanceBySwappingLoadIn(Disk disk,
                                         ClusterModel clusterModel,
                                         Set<Goal> optimizedGoals,
