@@ -23,7 +23,7 @@ import static com.linkedin.kafka.cruisecontrol.executor.ExecutionTaskTracker.Exe
 /**
  * The class that helps track the execution status for the balancing.
  * It does the following things:
- * 1. Keep track of the in progress partition movements between each pair of source-destination disk&broker.
+ * 1. Keep track of the in progress partition movements between each pair of source-destination disk or broker.
  * 2. When one partition movement finishes, it check the involved brokers to see if we can run more partition movements.
  * We only keep track of the number of concurrent partition movements but not the sizes of the partitions.
  * Because the concurrent level determines how much impact the balancing process would have on the involved

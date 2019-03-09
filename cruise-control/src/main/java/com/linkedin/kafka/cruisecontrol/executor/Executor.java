@@ -26,6 +26,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 import kafka.zk.KafkaZkClient;
 import org.apache.kafka.clients.Metadata;
 import org.apache.kafka.clients.admin.AdminClient;
@@ -385,12 +386,20 @@ public class Executor {
    * @param removedBrokers Brokers to be removed, null if no broker has been removed.
    */
   private void startExecution(LoadMonitor loadMonitor, Collection<Integer> demotedBrokers, Collection<Integer> removedBrokers) {
+    // Note that in case there is an ongoing partition reassignment, we do not unpause metric sampling.
     if (!ExecutorZkUtils.partitionsBeingReassigned(_kafkaZkClient).isEmpty()) {
       _executionTaskManager.clear();
       _uuid = null;
-      // Note that in case there is an ongoing partition reassignment, we do not unpause metric sampling.
-      throw new IllegalStateException("There are ongoing partition reassignments.");
+      throw new IllegalStateException("There are ongoing inter-broker partition movements.");
     }
+
+    if (isOngoingIntraBrokerReplicaMovement(_metadataClient.cluster().nodes().stream().mapToInt(Node::id).boxed().collect(Collectors.toSet()),
+                                           _adminClient)) {
+      _executionTaskManager.clear();
+      _uuid = null;
+      throw new IllegalStateException("There are ongoing intra-broker partition movements.");
+    }
+
     _hasOngoingExecution = true;
     _stopRequested.set(false);
     if (_isKafkaAssignerMode) {
@@ -816,7 +825,6 @@ public class Executor {
         }
         updateOngoingExecutionState();
       } while (!_executionTaskManager.inExecutionTasks().isEmpty() && finishedTasks.isEmpty());
-      // Some tasks have finished, remove them from in progress task map.
       LOG.info("Completed tasks: {}", finishedTasks);
     }
 

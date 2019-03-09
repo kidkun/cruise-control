@@ -543,7 +543,15 @@ public class Broker implements Serializable, Comparable<Broker> {
    */
   public void populateDiskInfo(String logdir, Map<TopicPartition, DescribeLogDirsResponse.ReplicaInfo> replicaInfos) {
     Disk disk = disk(logdir);
-    replicaInfos.forEach((key, value) -> disk.addReplica(replica(key), true));
+    replicaInfos.forEach((key, value) -> {
+      try {
+        if (!value.isFuture) {
+          disk.addReplica(replica(key), true);
+        }
+      } catch (NullPointerException e) {
+        // Let it go.
+      }
+    });
   }
 
   /**

@@ -149,41 +149,18 @@ public class IntraBrokerDiskUsageDistributionGoal extends AbstractGoal {
    */
   @Override
   public ActionAcceptance actionAcceptance(BalancingAction action, ClusterModel clusterModel) {
-    // Currently disk-granularity goals do not work with broker-granularity goals.
-    if (action.sourceBrokerLogdir() == null || action.destinationBrokerLogdir() == null) {
-      throw new IllegalArgumentException(this.getClass().getSimpleName() + " does not support balancing action not "
-                                         + "specifying logdir.");
-    }
-
+    double sourceUtilizationDelta = sourceUtilizationDelta(action, clusterModel);
     Broker broker = clusterModel.broker(action.sourceBrokerId());
-    Replica sourceReplica = broker.replica(action.topicPartition());
     Disk sourceDisk = broker.disk(action.sourceBrokerLogdir());
     Disk destinationDisk = broker.disk(action.destinationBrokerLogdir());
-    switch (action.balancingAction()) {
-      case REPLICA_SWAP:
-        Replica destinationReplica = broker.replica(action.destinationTopicPartition());
-        double sourceUtilizationDelta = destinationReplica.load().expectedUtilizationFor(RESOURCE) -
-                                        sourceReplica.load().expectedUtilizationFor(RESOURCE);
-
-        if (sourceUtilizationDelta == 0) {
-          // No change in terms of load.
-          return ACCEPT;
-        }
-        if (isChangeViolatingLimit(sourceUtilizationDelta, sourceDisk, destinationDisk)) {
-          return REPLICA_REJECT;
-        }
-        return isGettingMoreBalanced(sourceDisk, destinationDisk, sourceUtilizationDelta) ? ACCEPT : REPLICA_REJECT;
-      case LEADERSHIP_MOVEMENT:
-        return ACCEPT;
-      case REPLICA_MOVEMENT:
-        sourceUtilizationDelta = - sourceReplica.load().expectedUtilizationFor(RESOURCE);
-        if (isChangeViolatingLimit(sourceUtilizationDelta, sourceDisk, destinationDisk)) {
-          return REPLICA_REJECT;
-        }
-        return isGettingMoreBalanced(sourceDisk, destinationDisk, sourceUtilizationDelta) ? ACCEPT : REPLICA_REJECT;
-      default:
-        throw new IllegalArgumentException("Unsupported balancing action " + action.balancingAction() + " is provided.");
+    if (sourceUtilizationDelta == 0) {
+      // No change in terms of load.
+      return ACCEPT;
     }
+    if (isChangeViolatingLimit(sourceUtilizationDelta, sourceDisk, destinationDisk)) {
+      return REPLICA_REJECT;
+    }
+    return isGettingMoreBalanced(sourceDisk, destinationDisk, sourceUtilizationDelta) ? ACCEPT : REPLICA_REJECT;
   }
 
   /**
@@ -196,7 +173,31 @@ public class IntraBrokerDiskUsageDistributionGoal extends AbstractGoal {
    */
   @Override
   protected boolean selfSatisfied(ClusterModel clusterModel, BalancingAction action) {
-    return actionAcceptance(action, clusterModel) == ACCEPT;
+    double sourceUtilizationDelta = sourceUtilizationDelta(action, clusterModel);
+    return sourceUtilizationDelta != 0 && actionAcceptance(action, clusterModel) == ACCEPT;
+  }
+
+  private double sourceUtilizationDelta(BalancingAction action, ClusterModel clusterModel) {
+    // Currently disk-granularity goals do not work with broker-granularity goals.
+    if (action.sourceBrokerLogdir() == null || action.destinationBrokerLogdir() == null) {
+      throw new IllegalArgumentException(this.getClass().getSimpleName() + " does not support balancing action not "
+                                         + "specifying logdir.");
+    }
+
+    Broker broker = clusterModel.broker(action.sourceBrokerId());
+    Replica sourceReplica = broker.replica(action.topicPartition());
+    switch (action.balancingAction()) {
+      case REPLICA_SWAP:
+        Replica destinationReplica = broker.replica(action.destinationTopicPartition());
+        return destinationReplica.load().expectedUtilizationFor(RESOURCE)
+               - sourceReplica.load().expectedUtilizationFor(RESOURCE);
+      case LEADERSHIP_MOVEMENT:
+        return 0;
+      case REPLICA_MOVEMENT:
+        return - sourceReplica.load().expectedUtilizationFor(RESOURCE);
+      default:
+        throw new IllegalArgumentException("Unsupported balancing action " + action.balancingAction() + " is provided.");
+    }
   }
 
   private boolean isChangeViolatingLimit(double sourceUtilizationDelta, Disk sourceDisk, Disk destinationDisk) {
@@ -503,7 +504,7 @@ public class IntraBrokerDiskUsageDistributionGoal extends AbstractGoal {
         LOG.debug("Swap load out timeout for disk {}.", disk.logDir());
         break;
       }
-      if (diskUtilizationPercentage(candidateDisk) < _balanceUpperThresholdByBroker.get(broker)) {
+      if (diskUtilizationPercentage(candidateDisk) > _balanceLowerThresholdByBroker.get(broker)) {
         candidateDiskPQ.add(candidateDisk);
       }
     }

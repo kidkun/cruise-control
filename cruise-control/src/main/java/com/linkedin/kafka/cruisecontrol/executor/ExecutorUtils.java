@@ -4,7 +4,6 @@
 
 package com.linkedin.kafka.cruisecontrol.executor;
 
-import com.linkedin.kafka.cruisecontrol.KafkaCruiseControl;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -20,14 +19,16 @@ import org.apache.kafka.common.TopicPartitionReplica;
 import org.apache.kafka.common.errors.KafkaStorageException;
 import org.apache.kafka.common.errors.LogDirNotFoundException;
 import org.apache.kafka.common.errors.ReplicaNotAvailableException;
+import org.apache.kafka.common.protocol.Errors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.apache.kafka.clients.admin.DescribeReplicaLogDirsResult.ReplicaLogDirInfo;
+import static org.apache.kafka.common.requests.DescribeLogDirsResponse.LogDirInfo;
 
 public class ExecutorUtils {
-  private static final Logger LOG = LoggerFactory.getLogger(KafkaCruiseControl.class);
-  private static long LOGDIR_RESPONSE_TIMEOUT_MS = 1000L;
+  private static final Logger LOG = LoggerFactory.getLogger(ExecutorUtils.class);
+  private static long LOGDIR_RESPONSE_TIMEOUT_MS = 10000L;
 
   private ExecutorUtils() {
 
@@ -89,6 +90,31 @@ public class ExecutorUtils {
         executionTaskManager.markTaskDead(replicaToTask.get(entry.getKey()));
       }
     }
+  }
+
+  /**
+   * Check whether there is ongoing intra-broker replica movement.
+   * @param brokersToCheck List of broker to check.
+   * @param adminClient The adminClient to send describeLogDirs request.
+   * @return True if there is ongoing intra-broker replica movement.
+   */
+  static boolean isOngoingIntraBrokerReplicaMovement(Collection<Integer> brokersToCheck, AdminClient adminClient) {
+    Map<Integer, KafkaFuture<Map<String, LogDirInfo>>> logDirsByBrokerId = adminClient.describeLogDirs(brokersToCheck).values();
+    for (Map.Entry<Integer, KafkaFuture<Map<String, LogDirInfo>>> entry : logDirsByBrokerId.entrySet()) {
+      try {
+        Map<String, LogDirInfo> logInfos = entry.getValue().get(LOGDIR_RESPONSE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        for (LogDirInfo info : logInfos.values()) {
+          if (info.error == Errors.NONE) {
+            if (info.replicaInfos.values().stream().anyMatch(i -> i.isFuture)) {
+              return true;
+            }
+          }
+        }
+      } catch (InterruptedException | TimeoutException | ExecutionException e) {
+        //Let it go.
+      }
+    }
+    return false;
   }
 }
 

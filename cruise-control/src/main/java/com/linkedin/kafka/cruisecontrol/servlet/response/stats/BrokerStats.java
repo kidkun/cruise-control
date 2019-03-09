@@ -165,11 +165,11 @@ public class BrokerStats extends AbstractCruiseControlResponse {
         Map<String, Double> utilByDisk =  stats.utilByDisk();
         for (Map.Entry<String, Double> entry : utilByDisk.entrySet()) {
           if (!isHeaderAppended) {
-            sb.append(String.format("%%nn" + _hostFieldLength + "s%15s%30s%26s%n", "HOST", "BROKER", "LOGDIR",
-                                    "DISK(MB)/_(%)_"));
+            sb.append(String.format("%n%n%" + _hostFieldLength + "s%15s%50s%26s%n", "HOST", "BROKER", "LOGDIR",
+                "DISK(MB)/_(%)_"));
             isHeaderAppended = true;
           }
-          sb.append(String.format("%" + _hostFieldLength + "s,%14d,%29s,%19.3f/%05.2f%n",
+          sb.append(String.format("%" + _hostFieldLength + "s,%14d,%49s,%19.3f/%05.2f%n",
                                   stats.host(),
                                   stats.id(),
                                   entry.getKey(),

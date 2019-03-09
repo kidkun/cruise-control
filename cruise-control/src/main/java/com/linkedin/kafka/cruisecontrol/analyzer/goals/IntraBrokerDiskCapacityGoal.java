@@ -37,7 +37,7 @@ import static com.linkedin.kafka.cruisecontrol.analyzer.ActionAcceptance.REPLICA
  * under the capacity limit.
  */
 public class IntraBrokerDiskCapacityGoal extends AbstractGoal {
-  private static final Logger LOG = LoggerFactory.getLogger(CapacityGoal.class);
+  private static final Logger LOG = LoggerFactory.getLogger(IntraBrokerDiskCapacityGoal.class);
   private static final int MIN_NUM_VALID_WINDOWS = 1;
   private static final Resource RESOURCE = Resource.DISK;
 
@@ -136,7 +136,8 @@ public class IntraBrokerDiskCapacityGoal extends AbstractGoal {
   protected boolean selfSatisfied(ClusterModel clusterModel, BalancingAction action) {
     Replica sourceReplica = clusterModel.broker(action.sourceBrokerId()).replica(action.topicPartition());
     Disk destinationDisk = clusterModel.broker(action.destinationBrokerId()).disk(action.destinationBrokerLogdir());
-    return isMovementAcceptableForCapacity(sourceReplica, destinationDisk);
+    return sourceReplica.load().expectedUtilizationFor(RESOURCE) > 0
+           && isMovementAcceptableForCapacity(sourceReplica, destinationDisk);
   }
 
   /**

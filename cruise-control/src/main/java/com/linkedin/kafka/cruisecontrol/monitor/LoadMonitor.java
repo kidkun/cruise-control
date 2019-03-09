@@ -18,6 +18,7 @@ import com.linkedin.kafka.cruisecontrol.KafkaCruiseControlUtils;
 import com.linkedin.kafka.cruisecontrol.analyzer.AnalyzerUtils;
 import com.linkedin.kafka.cruisecontrol.common.KafkaCruiseControlThreadFactory;
 import com.linkedin.kafka.cruisecontrol.common.MetadataClient;
+import com.linkedin.kafka.cruisecontrol.common.Resource;
 import com.linkedin.kafka.cruisecontrol.config.BrokerCapacityConfigResolver;
 import com.linkedin.kafka.cruisecontrol.config.BrokerCapacityInfo;
 import com.linkedin.kafka.cruisecontrol.config.KafkaCruiseControlConfig;
@@ -47,6 +48,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.SortedSet;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
@@ -64,12 +66,12 @@ import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.internals.ClusterResourceListeners;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.requests.DescribeLogDirsResponse;
 import org.apache.kafka.common.utils.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static com.linkedin.kafka.cruisecontrol.model.Disk.State.*;
+import static org.apache.kafka.common.requests.DescribeLogDirsResponse.LogDirInfo;
 
 /**
  * The LoadMonitor monitors the workload of a Kafka cluster. It periodically triggers the metric sampling and
@@ -505,6 +507,8 @@ public class LoadMonitor {
         clusterModel.createRack(rack);
         BrokerCapacityInfo brokerCapacity =
             _brokerCapacityConfigResolver.capacityForBroker(rack, node.host(), node.id());
+        LOG.debug("Get capacity info for broker {}: total capacity {}, capacity by logdir {}.",
+                  node.id(), brokerCapacity.capacity().get(Resource.DISK), brokerCapacity.diskCapacityByLogDir());
         clusterModel.createBroker(rack, node.host(), node.id(), brokerCapacity);
       }
 
@@ -526,9 +530,9 @@ public class LoadMonitor {
 
       // Populate disk information for the cluster model.
       if (populateDiskInfo) {
-        Map<Integer, KafkaFuture<Map<String, DescribeLogDirsResponse.LogDirInfo>>> logDirsByBrokerId =
+        Map<Integer, KafkaFuture<Map<String, LogDirInfo>>> logDirsByBrokerId =
             _adminClient.describeLogDirs(clusterModel.aliveBrokers().stream().mapToInt(Broker::id).boxed().collect(Collectors.toList())).values();
-        for (Map.Entry<Integer, KafkaFuture<Map<String, DescribeLogDirsResponse.LogDirInfo>>> entry : logDirsByBrokerId.entrySet()) {
+        for (Map.Entry<Integer, KafkaFuture<Map<String, LogDirInfo>>> entry : logDirsByBrokerId.entrySet()) {
           Broker broker = clusterModel.broker(entry.getKey());
           try {
             entry.getValue().get(LOGDIR_RESPONSE_TIMEOUT_MS, TimeUnit.MILLISECONDS).forEach((key, value) -> {
@@ -539,9 +543,9 @@ public class LoadMonitor {
               }
             });
           } catch (TimeoutException te) {
-            LOG.error("Getting log dir information for broker {} timed out.", entry.getKey());
-          } catch (Exception e) {
-            LOG.error("Getting log dir information for broker {} encountered exception {}.", entry.getKey(), e);
+            LOG.error("Getting logdir information for broker {} timed out.", entry.getKey());
+          } catch (InterruptedException | ExecutionException e) {
+            LOG.error("Populating logdir information for broker {} encountered Exception {}.", entry.getKey(), e);
           }
         }
       }

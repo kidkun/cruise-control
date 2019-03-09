@@ -115,6 +115,21 @@ public class ExecutionTaskPlanner {
     maybeAddInterBrokerReplicaMovementTasks(proposals, cluster, replicaMovementStrategy);
     maybeAddIntraBrokerReplicaMovementTasks(proposals);
     maybeAddLeaderChangeTasks(proposals, cluster);
+    sanityCheckExecutionTasks();
+  }
+
+  /**
+   * Sanity check that if there is any intra-broker partition movement task generated, only replica swap can be
+   * generated for inter-broker partition movement task.
+   */
+  private void sanityCheckExecutionTasks() {
+    if (_remainingIntraBrokerReplicaMovements.size() > 0) {
+      for (ExecutionTask task : _remainingInterBrokerReplicaMovements) {
+        if (task.proposal().replicasToAdd().size() > 0) {
+          throw new IllegalStateException("Intra-broker partition movement should not mingle with inter-broker partition movement.");
+        }
+      }
+    }
   }
 
   /**
