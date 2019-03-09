@@ -4,6 +4,8 @@
 
 package com.linkedin.kafka.cruisecontrol.servlet.parameters;
 
+import com.linkedin.kafka.cruisecontrol.analyzer.goals.IntraBrokerDiskCapacityGoal;
+import com.linkedin.kafka.cruisecontrol.analyzer.goals.IntraBrokerDiskUsageDistributionGoal;
 import com.linkedin.kafka.cruisecontrol.config.KafkaCruiseControlConfig;
 import com.linkedin.kafka.cruisecontrol.detector.notifier.AnomalyType;
 import com.linkedin.kafka.cruisecontrol.executor.strategy.BaseReplicaMovementStrategy;
@@ -71,7 +73,8 @@ public class ParameterUtils {
   public static final String THROTTLE_REMOVED_BROKER_PARAM = "throttle_removed_broker";
   public static final String IGNORE_PROPOSAL_CACHE_PARAM = "ignore_proposal_cache";
   public static final String USE_READY_DEFAULT_GOALS_PARAM = "use_ready_default_goals";
-  public static final String CONCURRENT_PARTITION_MOVEMENTS_PER_BROKER_PARAM = "concurrent_partition_movements_per_broker";
+  public static final String CONCURRENT_INTER_BROKER_PARTITION_MOVEMENTS_PER_BROKER_PARAM = "concurrent_inter_broker_partition_movements_per_broker";
+  public static final String CONCURRENT_INTRA_BROKER_PARTITION_MOVEMENTS_PER_BROKER_PARAM = "concurrent_intra_broker_partition_movements_per_broker";
   public static final String CONCURRENT_LEADER_MOVEMENTS_PARAM = "concurrent_leader_movements";
   public static final String DEFAULT_PARTITION_LOAD_RESOURCE = "disk";
   public static final String SUBSTATES_PARAM = "substates";
@@ -89,6 +92,7 @@ public class ParameterUtils {
   public static final String EXCLUDE_RECENTLY_DEMOTED_BROKERS_PARAM = "exclude_recently_demoted_brokers";
   public static final String EXCLUDE_RECENTLY_REMOVED_BROKERS_PARAM = "exclude_recently_removed_brokers";
   public static final String REPLICA_MOVEMENT_STRATEGIES_PARAM = "replica_movement_strategies";
+  public static final String REBALANCE_DISK_MODE_PARAM = "rebalance_disk";
 
   private static final Map<EndPoint, Set<String>> VALID_ENDPOINT_PARAM_NAMES;
 
@@ -135,6 +139,7 @@ public class ParameterUtils {
     proposals.add(USE_READY_DEFAULT_GOALS_PARAM);
     proposals.add(EXCLUDE_RECENTLY_DEMOTED_BROKERS_PARAM);
     proposals.add(EXCLUDE_RECENTLY_REMOVED_BROKERS_PARAM);
+    proposals.add(REBALANCE_DISK_MODE_PARAM);
 
     Set<String> state = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
     state.add(VERBOSE_PARAM);
@@ -149,7 +154,7 @@ public class ParameterUtils {
     addRemoveOrFixBroker.add(KAFKA_ASSIGNER_MODE_PARAM);
     addRemoveOrFixBroker.add(JSON_PARAM);
     addRemoveOrFixBroker.add(ALLOW_CAPACITY_ESTIMATION_PARAM);
-    addRemoveOrFixBroker.add(CONCURRENT_PARTITION_MOVEMENTS_PER_BROKER_PARAM);
+    addRemoveOrFixBroker.add(CONCURRENT_INTER_BROKER_PARTITION_MOVEMENTS_PER_BROKER_PARAM);
     addRemoveOrFixBroker.add(CONCURRENT_LEADER_MOVEMENTS_PARAM);
     addRemoveOrFixBroker.add(SKIP_HARD_GOAL_CHECK_PARAM);
     addRemoveOrFixBroker.add(EXCLUDED_TOPICS_PARAM);
@@ -192,7 +197,8 @@ public class ParameterUtils {
     rebalance.add(DATA_FROM_PARAM);
     rebalance.add(JSON_PARAM);
     rebalance.add(ALLOW_CAPACITY_ESTIMATION_PARAM);
-    rebalance.add(CONCURRENT_PARTITION_MOVEMENTS_PER_BROKER_PARAM);
+    rebalance.add(CONCURRENT_INTER_BROKER_PARTITION_MOVEMENTS_PER_BROKER_PARAM);
+    rebalance.add(CONCURRENT_INTRA_BROKER_PARTITION_MOVEMENTS_PER_BROKER_PARAM);
     rebalance.add(CONCURRENT_LEADER_MOVEMENTS_PARAM);
     rebalance.add(SKIP_HARD_GOAL_CHECK_PARAM);
     rebalance.add(EXCLUDED_TOPICS_PARAM);
@@ -202,6 +208,7 @@ public class ParameterUtils {
     rebalance.add(EXCLUDE_RECENTLY_REMOVED_BROKERS_PARAM);
     rebalance.add(REPLICA_MOVEMENT_STRATEGIES_PARAM);
     rebalance.add(IGNORE_PROPOSAL_CACHE_PARAM);
+    rebalance.add(REBALANCE_DISK_MODE_PARAM);
 
     Set<String> kafkaClusterState = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
     kafkaClusterState.add(VERBOSE_PARAM);
@@ -228,7 +235,8 @@ public class ParameterUtils {
     admin.add(JSON_PARAM);
     admin.add(DISABLE_SELF_HEALING_FOR_PARAM);
     admin.add(ENABLE_SELF_HEALING_FOR_PARAM);
-    admin.add(CONCURRENT_PARTITION_MOVEMENTS_PER_BROKER_PARAM);
+    admin.add(CONCURRENT_INTER_BROKER_PARTITION_MOVEMENTS_PER_BROKER_PARAM);
+    admin.add(CONCURRENT_INTRA_BROKER_PARTITION_MOVEMENTS_PER_BROKER_PARAM);
     admin.add(CONCURRENT_LEADER_MOVEMENTS_PARAM);
 
     validParamNames.put(BOOTSTRAP, Collections.unmodifiableSet(bootstrap));
@@ -328,11 +336,11 @@ public class ParameterUtils {
   }
 
   static boolean allowCapacityEstimation(HttpServletRequest request) {
-    return getBooleanParam(request, ALLOW_CAPACITY_ESTIMATION_PARAM, true);
+    return getBooleanExcludeGiven(request, ALLOW_CAPACITY_ESTIMATION_PARAM, REBALANCE_DISK_MODE_PARAM);
   }
 
   private static boolean excludeBrokers(HttpServletRequest request, String parameter, boolean defaultIfMissing) {
-    boolean isKafkaAssignerMode = getMode(request);
+    boolean isKafkaAssignerMode = isKafkaAssignerMode(request);
     boolean excludeBrokers = getBooleanParam(request, parameter, defaultIfMissing);
     if (isKafkaAssignerMode && excludeBrokers) {
       throw new UserRequestException("Kafka assigner mode does not support excluding brokers.");
@@ -380,8 +388,12 @@ public class ParameterUtils {
     return getBooleanParam(request, CLEAR_METRICS_PARAM, true);
   }
 
-  private static boolean getMode(HttpServletRequest request) {
+  private static boolean isKafkaAssignerMode(HttpServletRequest request) {
     return getBooleanParam(request, KAFKA_ASSIGNER_MODE_PARAM, false);
+  }
+
+  static boolean isRebalanceDiskMode(HttpServletRequest request) {
+    return getBooleanParam(request, REBALANCE_DISK_MODE_PARAM, false);
   }
 
   static boolean ignoreProposalCache(HttpServletRequest request) {
@@ -565,7 +577,8 @@ public class ParameterUtils {
   }
 
   static List<String> getGoals(HttpServletRequest request) throws UnsupportedEncodingException {
-    boolean isKafkaAssignerMode = getMode(request);
+    boolean isKafkaAssignerMode = isKafkaAssignerMode(request);
+    boolean isRebalanceDiskMode = isRebalanceDiskMode(request);
     List<String> goals = getListParam(request, GOALS_PARAM);
 
     // KafkaAssigner mode is assumed to use two KafkaAssigner goals, if client specifies goals in request, throw exception.
@@ -576,6 +589,13 @@ public class ParameterUtils {
       return Collections.unmodifiableList(Arrays.asList(KafkaAssignerEvenRackAwareGoal.class.getSimpleName(),
                                                         KafkaAssignerDiskUsageDistributionGoal.class.getSimpleName()));
     }
+    if (isRebalanceDiskMode) {
+      if (!goals.isEmpty()) {
+        throw new UserRequestException("Rebalance disk mode does not support explicitly specifying goals in request.");
+      }
+      return Collections.unmodifiableList(Arrays.asList(IntraBrokerDiskCapacityGoal.class.getSimpleName(),
+                                                        IntraBrokerDiskUsageDistributionGoal.class.getSimpleName()));
+    }
     return goals;
   }
 
@@ -585,11 +605,16 @@ public class ParameterUtils {
   }
 
   /**
-   * @param isPartitionMovement True if partition movement per broker, false if the total leader movement.
+   * @param isInterBrokerPartitionMovement True if inter-broker partition movement per broker.
+   * @param isInterBrokerPartitionMovement True if intra-broker partition movement per broker.
    */
-  static Integer concurrentMovements(HttpServletRequest request, boolean isPartitionMovement) {
-    String parameterString = caseSensitiveParameterName(request, isPartitionMovement ? CONCURRENT_PARTITION_MOVEMENTS_PER_BROKER_PARAM
-                                                                                     : CONCURRENT_LEADER_MOVEMENTS_PARAM);
+  static Integer concurrentMovements(HttpServletRequest request,
+                                     boolean isInterBrokerPartitionMovement,
+                                     boolean isIntraBrokerPartitionMovement) {
+    String parameterString = caseSensitiveParameterName(request,
+                                                        isInterBrokerPartitionMovement ? CONCURRENT_INTER_BROKER_PARTITION_MOVEMENTS_PER_BROKER_PARAM :
+                                                        isIntraBrokerPartitionMovement ? CONCURRENT_INTRA_BROKER_PARTITION_MOVEMENTS_PER_BROKER_PARAM :
+                                                                                         CONCURRENT_LEADER_MOVEMENTS_PARAM);
     if (parameterString == null) {
       return null;
     }
@@ -704,7 +729,8 @@ public class ParameterUtils {
    * Skip hard goal check in kafka_assigner mode,
    */
   static boolean skipHardGoalCheck(HttpServletRequest request) {
-    return getMode(request) || getBooleanParam(request, SKIP_HARD_GOAL_CHECK_PARAM, false);
+    return isKafkaAssignerMode(request) || isRebalanceDiskMode(request) ||
+           getBooleanParam(request, SKIP_HARD_GOAL_CHECK_PARAM, false);
   }
 
   static boolean skipUrpDemotion(HttpServletRequest request) {

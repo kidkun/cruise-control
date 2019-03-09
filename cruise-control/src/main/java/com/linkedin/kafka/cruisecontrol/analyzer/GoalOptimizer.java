@@ -57,8 +57,10 @@ import static com.linkedin.kafka.cruisecontrol.model.ClusterModel.ReplicaPlaceme
  * A class for optimizing goals in the given order of priority.
  */
 public class GoalOptimizer implements Runnable {
-  private static final String NUM_REPLICA_MOVEMENTS = "numReplicaMovements";
-  private static final String DATA_TO_MOVE_MB = "dataToMoveMB";
+  private static final String NUM_INTER_BROKER_REPLICA_MOVEMENTS = "numInterBrokerReplicaMovements";
+  private static final String INTER_BROKER_DATA_TO_MOVE_MB = "interBrokerDataToMoveMB";
+  private static final String NUM_INTRA_BROKER_REPLICA_MOVEMENTS = "numIntraBrokerReplicaMovements";
+  private static final String INTRA_BROKER_DATA_TO_MOVE_MB = "intraBrokerDataToMoveMB";
   private static final String NUM_LEADER_MOVEMENTS = "numLeaderMovements";
   private static final String RECENT_WINDOWS = "recentWindows";
   private static final String MONITORED_PARTITIONS_PERCENTAGE = "monitoredPartitionsPercentage";
@@ -602,37 +604,47 @@ public class GoalOptimizer implements Runnable {
     }
 
     private List<Number> getMovementStats() {
-      Integer numReplicaMovements = 0;
+      Integer numInterBrokerReplicaMovements = 0;
+      Integer numIntraBrokerReplicaMovements = 0;
       Integer numLeaderMovements = 0;
-      long dataToMove = 0L;
+      long interBrokerDataToMove = 0L;
+      long intraBrokerDataToMove = 0L;
       for (ExecutionProposal p : _proposals) {
         if (!p.replicasToAdd().isEmpty() || !p.replicasToRemove().isEmpty()) {
-          numReplicaMovements++;
-          dataToMove += p.dataToMoveInMB();
+          numInterBrokerReplicaMovements++;
+          interBrokerDataToMove += p.interBrokerDataToMoveInMB();
+        } else if (!p.replicasToMoveByBroker().isEmpty()) {
+          numIntraBrokerReplicaMovements += p.replicasToMoveByBroker().size();
+          intraBrokerDataToMove += p.intraBrokerDataToMoveInMB() * p.replicasToMoveByBroker().size();
         } else {
           numLeaderMovements++;
         }
       }
-      return Arrays.asList(numReplicaMovements, dataToMove, numLeaderMovements);
+      return Arrays.asList(numInterBrokerReplicaMovements, interBrokerDataToMove,
+                           numIntraBrokerReplicaMovements, intraBrokerDataToMove,
+                           numLeaderMovements);
     }
 
     public String getProposalSummary() {
       List<Number> moveStats = getMovementStats();
-      return String.format("%n%nThe optimization proposal has %d replica(%d MB) movements and %d leadership movements "
-                           + "based on the cluster model with %d recent snapshot windows and %.3f%% of the partitions "
-                           + "covered.%nExcluded Topics: %s.%nExcluded Brokers For Leadership: %s.%nExcluded Brokers "
-                           + "For Replica Move: %s.",
+      return String.format("%n%nThe optimization proposal has %d inter-broker replica(%d MB) movements, %d intra-broker "
+                           + "replica(%d MB) movements and %d leadership movements based on the cluster model with %d "
+                           + "recent snapshot windows and %.3f%% of the partitions covered.%nExcluded Topics: %s.%n"
+                           + "Excluded Brokers For Leadership: %s.%nExcluded Brokers For Replica Move: %s.",
                            moveStats.get(0).intValue(), moveStats.get(1).longValue(), moveStats.get(2).intValue(),
-                           _clusterModelStats.numSnapshotWindows(), _clusterModelStats.monitoredPartitionsPercentage() * 100,
-                           excludedTopics(), excludedBrokersForLeadership(), excludedBrokersForReplicaMove());
+                           moveStats.get(3).longValue(), moveStats.get(4).intValue(), _clusterModelStats.numSnapshotWindows(),
+                           _clusterModelStats.monitoredPartitionsPercentage() * 100, excludedTopics(),
+                           excludedBrokersForLeadership(), excludedBrokersForReplicaMove());
     }
 
     public Map<String, Object> getProposalSummaryForJson() {
       List<Number> moveStats = getMovementStats();
       Map<String, Object> ret = new HashMap<>();
-      ret.put(NUM_REPLICA_MOVEMENTS, moveStats.get(0).intValue());
-      ret.put(DATA_TO_MOVE_MB, moveStats.get(1).longValue());
-      ret.put(NUM_LEADER_MOVEMENTS, moveStats.get(2).intValue());
+      ret.put(NUM_INTER_BROKER_REPLICA_MOVEMENTS, moveStats.get(0).intValue());
+      ret.put(INTER_BROKER_DATA_TO_MOVE_MB, moveStats.get(1).longValue());
+      ret.put(NUM_INTRA_BROKER_REPLICA_MOVEMENTS, moveStats.get(2).intValue());
+      ret.put(INTRA_BROKER_DATA_TO_MOVE_MB, moveStats.get(3).longValue());
+      ret.put(NUM_LEADER_MOVEMENTS, moveStats.get(4).intValue());
       ret.put(RECENT_WINDOWS, _clusterModelStats.numSnapshotWindows());
       ret.put(MONITORED_PARTITIONS_PERCENTAGE, _clusterModelStats.monitoredPartitionsPercentage() * 100.0);
       ret.put(EXCLUDED_TOPICS, excludedTopics());

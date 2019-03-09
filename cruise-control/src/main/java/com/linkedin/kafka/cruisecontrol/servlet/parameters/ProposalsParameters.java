@@ -16,10 +16,12 @@ import javax.servlet.http.HttpServletRequest;
  *    &amp;goals=[goal1,goal2...]&amp;data_from=[valid_windows/valid_partitions]&amp;excluded_topics=[pattern]
  *    &amp;use_ready_default_goals=[true/false]&amp;allow_capacity_estimation=[true/false]&amp;json=[true/false]
  *    &amp;exclude_recently_demoted_brokers=[true/false]&amp;exclude_recently_removed_brokers=[true/false]
+ *    &amp;rebalance_disk=[true/false]&amp;kafka_assigner=[true/false]
  * </pre>
  */
 public class ProposalsParameters extends GoalBasedOptimizationParameters {
   private boolean _ignoreProposalCache;
+  private boolean _isRebalanceDiskMode;
 
   public ProposalsParameters(HttpServletRequest request) {
     super(request);
@@ -29,9 +31,14 @@ public class ProposalsParameters extends GoalBasedOptimizationParameters {
   protected void initParameters() throws UnsupportedEncodingException {
     super.initParameters();
     _ignoreProposalCache = ParameterUtils.ignoreProposalCache(_request);
+    _isRebalanceDiskMode = ParameterUtils.isRebalanceDiskMode(_request);
   }
 
   public boolean ignoreProposalCache() {
     return _ignoreProposalCache;
+  }
+
+  public boolean isRebalanceDiskMode() {
+    return _isRebalanceDiskMode;
   }
 }

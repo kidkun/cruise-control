@@ -1040,19 +1040,19 @@ public class KafkaCruiseControlConfig extends AbstractConfig {
         .define(ZOOKEEPER_CONNECT_CONFIG, ConfigDef.Type.STRING, ConfigDef.Importance.HIGH, ZOOKEEPER_CONNECT_DOC)
         .define(NUM_CONCURRENT_INTER_BROKER_PARTITION_MOVEMENTS_PER_BROKER_CONFIG,
                 ConfigDef.Type.INT,
-                5,
+                2,
                 atLeast(1),
                 ConfigDef.Importance.MEDIUM,
                 NUM_CONCURRENT_INTER_BROKER_PARTITION_MOVEMENTS_PER_BROKER_DOC)
         .define(NUM_CONCURRENT_INTRA_BROKER_PARTITION_MOVEMENTS_PER_BROKER_CONFIG,
                 ConfigDef.Type.INT,
-                5,
+                2,
                 atLeast(1),
                 ConfigDef.Importance.MEDIUM,
                 NUM_CONCURRENT_INTRA_BROKER_PARTITION_MOVEMENTS_PER_BROKER_DOC)
         .define(NUM_CONCURRENT_LEADER_MOVEMENTS_CONFIG,
                 ConfigDef.Type.INT,
-                1000,
+                100,
                 atLeast(1),
                 ConfigDef.Importance.MEDIUM,
                 NUM_CONCURRENT_LEADER_MOVEMENTS_DOC)

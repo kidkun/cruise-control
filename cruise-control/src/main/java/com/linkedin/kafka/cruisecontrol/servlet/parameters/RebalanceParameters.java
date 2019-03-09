@@ -16,22 +16,25 @@ import javax.servlet.http.HttpServletRequest;
  * <pre>
  * Trigger a workload balance.
  *    POST /kafkacruisecontrol/rebalance?dryRun=[true/false]&amp;goals=[goal1,goal2...]
- *    &amp;allow_capacity_estimation=[true/false]&amp;concurrent_partition_movements_per_broker=[POSITIVE-INTEGER]
+ *    &amp;allow_capacity_estimation=[true/false]&amp;concurrent_inter_broker_partition_movements_per_broker=[POSITIVE-INTEGER]
+ *    &amp;concurrent_intra_broker_partition_movements_per_broker=[POSITIVE-INTEGER]
  *    &amp;concurrent_leader_movements=[POSITIVE-INTEGER]&amp;json=[true/false]&amp;skip_hard_goal_check=[true/false]
  *    &amp;excluded_topics=[pattern]&amp;use_ready_default_goals=[true/false]&amp;verbose=[true/false]
  *    &amp;exclude_recently_demoted_brokers=[true/false]&amp;exclude_recently_removed_brokers=[true/false]
- *    &amp;replica_movement_strategies=[strategy1,strategy2...]
- *    &amp;ignore_proposal_cache=[true/false]
+ *    &amp;replica_movement_strategies=[strategy1,strategy2...]&amp;ignore_proposal_cache=[true/false]
+ *    &amp;kafka_assigner=[true/false]&amp;rebalance_disk=[true/false]
  * </pre>
  */
 public class RebalanceParameters extends GoalBasedOptimizationParameters {
   private boolean _dryRun;
-  private Integer _concurrentPartitionMovements;
+  private Integer _concurrentInterBrokerPartitionMovements;
+  private Integer _concurrentIntraBrokerPartitionMovements;
   private Integer _concurrentLeaderMovements;
   private boolean _skipHardGoalCheck;
   private ReplicaMovementStrategy _replicaMovementStrategy;
   private final KafkaCruiseControlConfig _config;
   private boolean _ignoreProposalCache;
+  private boolean _isRebalanceDiskMode;
 
   public RebalanceParameters(HttpServletRequest request, KafkaCruiseControlConfig config) {
     super(request);
@@ -42,19 +45,25 @@ public class RebalanceParameters extends GoalBasedOptimizationParameters {
   protected void initParameters() throws UnsupportedEncodingException {
     super.initParameters();
     _dryRun = ParameterUtils.getDryRun(_request);
-    _concurrentPartitionMovements = ParameterUtils.concurrentMovements(_request, true);
-    _concurrentLeaderMovements = ParameterUtils.concurrentMovements(_request, false);
+    _concurrentInterBrokerPartitionMovements = ParameterUtils.concurrentMovements(_request, true, false);
+    _concurrentIntraBrokerPartitionMovements = ParameterUtils.concurrentMovements(_request, false, true);
+    _concurrentLeaderMovements = ParameterUtils.concurrentMovements(_request, false, false);
     _skipHardGoalCheck = ParameterUtils.skipHardGoalCheck(_request);
     _replicaMovementStrategy = ParameterUtils.getReplicaMovementStrategy(_request, _config);
     _ignoreProposalCache = ParameterUtils.ignoreProposalCache(_request);
+    _isRebalanceDiskMode =  ParameterUtils.isRebalanceDiskMode(_request);
   }
 
   public boolean dryRun() {
     return _dryRun;
   }
 
-  public Integer concurrentPartitionMovements() {
-    return _concurrentPartitionMovements;
+  public Integer concurrentInterBrokerPartitionMovements() {
+    return _concurrentInterBrokerPartitionMovements;
+  }
+
+  public Integer concurrentIntraBrokerPartitionMovements() {
+    return _concurrentIntraBrokerPartitionMovements;
   }
 
   public Integer concurrentLeaderMovements() {
@@ -71,5 +80,9 @@ public class RebalanceParameters extends GoalBasedOptimizationParameters {
 
   public boolean ignoreProposalCache() {
     return _ignoreProposalCache;
+  }
+
+  public boolean isRebalanceDiskMode() {
+    return _isRebalanceDiskMode;
   }
 }

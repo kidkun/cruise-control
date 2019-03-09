@@ -44,11 +44,12 @@ public class BrokerStats extends AbstractCruiseControlResponse {
 
   public void addSingleBrokerStats(String host, int id, Broker.State state, double diskUtil, double cpuUtil, double leaderBytesInRate,
                                    double followerBytesInRate, double bytesOutRate, double potentialBytesOutRate,
-                                   int numReplicas, int numLeaders, boolean isEstimated, double capacity) {
+                                   int numReplicas, int numLeaders, boolean isEstimated, double capacity,
+                                   Map<String, Double> diskUtils, Map<String, Double> diskCapacities) {
 
     SingleBrokerStats singleBrokerStats =
         new SingleBrokerStats(host, id, state, diskUtil, cpuUtil, leaderBytesInRate, followerBytesInRate, bytesOutRate,
-                              potentialBytesOutRate, numReplicas, numLeaders, isEstimated, capacity);
+                              potentialBytesOutRate, numReplicas, numLeaders, isEstimated, capacity, diskUtils, diskCapacities);
     _brokerStats.add(singleBrokerStats);
     _hostFieldLength = Math.max(_hostFieldLength, host.length());
     _hostStats.computeIfAbsent(host, h -> new BasicStats(0.0, 0.0, 0.0, 0.0,
@@ -157,6 +158,27 @@ public class BrokerStats extends AbstractCruiseControlResponse {
                               stats.basicStats().numReplicas()));
     }
 
+    // If disk stats exists, put disk stats.
+    boolean isHeaderAppended = false;
+    for (SingleBrokerStats stats : _brokerStats) {
+      if (stats.utilByDisk() != null) {
+        Map<String, Double> utilByDisk =  stats.utilByDisk();
+        for (Map.Entry<String, Double> entry : utilByDisk.entrySet()) {
+          if (!isHeaderAppended) {
+            sb.append(String.format("%%nn" + _hostFieldLength + "s%15s%30s%26s%n", "HOST", "BROKER", "LOGDIR",
+                                    "DISK(MB)/_(%)_"));
+            isHeaderAppended = true;
+          }
+          sb.append(String.format("%" + _hostFieldLength + "s,%14d,%29s,%19.3f/%05.2f%n",
+                                  stats.host(),
+                                  stats.id(),
+                                  entry.getKey(),
+                                  entry.getValue(),
+                                  stats.pctForDisk(entry.getKey())
+          ));
+        }
+      }
+    }
     return sb.toString();
   }
 }

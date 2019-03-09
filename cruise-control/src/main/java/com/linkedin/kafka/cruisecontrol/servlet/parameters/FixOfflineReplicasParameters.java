@@ -16,7 +16,7 @@ import javax.servlet.http.HttpServletRequest;
  * <pre>
  * Fix offline replicas
  *    POST /kafkacruisecontrol/fix_offline_replicas?dryrun=[true/false]&amp;goals=[goal1,goal2...]
- *    &amp;allow_capacity_estimation=[true/false]&amp;concurrent_partition_movements_per_broker=[true/false]
+ *    &amp;allow_capacity_estimation=[true/false]&amp;concurrent_inter_broker_partition_movements_per_broker=[true/false]
  *    &amp;concurrent_leader_movements=[true/false]&amp;json=[true/false]&amp;skip_hard_goal_check=[true/false]
  *    &amp;excluded_topics=[pattern]&amp;use_ready_default_goals=[true/false]&amp;data_from=[valid_windows/valid_partitions]
  *    &amp;replica_movement_strategies=[strategy1,strategy2...]
@@ -24,7 +24,7 @@ import javax.servlet.http.HttpServletRequest;
  */
 public class FixOfflineReplicasParameters extends GoalBasedOptimizationParameters {
   private boolean _dryRun;
-  private Integer _concurrentPartitionMovements;
+  private Integer _concurrentInterBrokerPartitionMovements;
   private Integer _concurrentLeaderMovements;
   private boolean _skipHardGoalCheck;
   private ReplicaMovementStrategy _replicaMovementStrategy;
@@ -39,8 +39,8 @@ public class FixOfflineReplicasParameters extends GoalBasedOptimizationParameter
   protected void initParameters() throws UnsupportedEncodingException {
     super.initParameters();
     _dryRun = ParameterUtils.getDryRun(_request);
-    _concurrentPartitionMovements = ParameterUtils.concurrentMovements(_request, true);
-    _concurrentLeaderMovements = ParameterUtils.concurrentMovements(_request, false);
+    _concurrentInterBrokerPartitionMovements = ParameterUtils.concurrentMovements(_request, true, false);
+    _concurrentLeaderMovements = ParameterUtils.concurrentMovements(_request, false, false);
     _skipHardGoalCheck = ParameterUtils.skipHardGoalCheck(_request);
     _replicaMovementStrategy = ParameterUtils.getReplicaMovementStrategy(_request, _config);
   }
@@ -49,8 +49,8 @@ public class FixOfflineReplicasParameters extends GoalBasedOptimizationParameter
     return _dryRun;
   }
 
-  public Integer concurrentPartitionMovements() {
-    return _concurrentPartitionMovements;
+  public Integer concurrentInterBrokerPartitionMovements() {
+    return _concurrentInterBrokerPartitionMovements;
   }
 
   public Integer concurrentLeaderMovements() {

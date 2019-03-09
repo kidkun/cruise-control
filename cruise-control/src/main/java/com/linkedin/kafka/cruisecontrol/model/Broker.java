@@ -582,6 +582,46 @@ public class Broker implements Serializable, Comparable<Broker> {
   }
 
   /**
+   * Get detailed disk utilization information of the broker.
+   *
+   * @return The detailed disk utilization information.
+   */
+  public Map<String, Double> diskUtils() {
+    if (_diskByLogdir == null || _diskByLogdir.isEmpty()) {
+      return null;
+    }
+    // If information of replica placement over disk is not populated, return nothing.
+    if (_diskByLogdir.values().stream().mapToInt(disk -> disk.replicas().size()).sum() == 0) {
+      return null;
+    }
+    Map<String, Double> diskUtilMap = new HashMap<>(_diskByLogdir.size());
+    for (Map.Entry<String, Disk> entry : _diskByLogdir.entrySet()) {
+      diskUtilMap.put(entry.getKey(), entry.getValue().load());
+    }
+    return diskUtilMap;
+  }
+
+  /**
+   * Get detailed disk capacity information of the broker.
+   *
+   * @return The detailed disk capacity information.
+   */
+  public Map<String, Double> diskCapacities() {
+    if (_diskByLogdir == null || _diskByLogdir.isEmpty()) {
+      return null;
+    }
+    // If information of replica placement over disk is not populated, return nothing.
+    if (_diskByLogdir.values().stream().mapToInt(disk -> disk.replicas().size()).sum() == 0) {
+      return null;
+    }
+    Map<String, Double> diskCapacityMap = new HashMap<>(_diskByLogdir.size());
+    for (Map.Entry<String, Disk> entry : _diskByLogdir.entrySet()) {
+      diskCapacityMap.put(entry.getKey(), entry.getValue().capacity());
+    }
+    return diskCapacityMap;
+  }
+
+  /**
    * Output writing string representation of this class to the stream.
    * @param out the output stream.
    */

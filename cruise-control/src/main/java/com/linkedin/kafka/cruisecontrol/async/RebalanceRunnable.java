@@ -15,15 +15,16 @@ import java.util.regex.Pattern;
 
 /**
  * The async runnable for {@link KafkaCruiseControl#rebalance(List, boolean, ModelCompletenessRequirements,
- * com.linkedin.kafka.cruisecontrol.async.progress.OperationProgress, boolean, Integer, Integer, boolean, Pattern,
- * ReplicaMovementStrategy, String, boolean, boolean, boolean)}
+ * com.linkedin.kafka.cruisecontrol.async.progress.OperationProgress, boolean, Integer, Integer, Integer, boolean,
+ * Pattern, ReplicaMovementStrategy, String, boolean, boolean, boolean, boolean)}
  */
 class RebalanceRunnable extends OperationRunnable {
   private final List<String> _goals;
   private final boolean _dryRun;
   private final ModelCompletenessRequirements _modelCompletenessRequirements;
   private final boolean _allowCapacityEstimation;
-  private final Integer _concurrentPartitionMovements;
+  private final Integer _concurrentInterBrokerPartitionMovements;
+  private final Integer _concurrentIntraBrokerPartitionMovements;
   private final Integer _concurrentLeaderMovements;
   private final boolean _skipHardGoalCheck;
   private final Pattern _excludedTopics;
@@ -32,6 +33,7 @@ class RebalanceRunnable extends OperationRunnable {
   private final boolean _excludeRecentlyRemovedBrokers;
   private final ReplicaMovementStrategy _replicaMovementStrategy;
   private final boolean _ignoreProposalCache;
+  private final boolean _isReBalanceDiskMode;
 
   RebalanceRunnable(KafkaCruiseControl kafkaCruiseControl,
                     OperationFuture future,
@@ -42,7 +44,8 @@ class RebalanceRunnable extends OperationRunnable {
     _dryRun = parameters.dryRun();
     _modelCompletenessRequirements = parameters.modelCompletenessRequirements();
     _allowCapacityEstimation = parameters.allowCapacityEstimation();
-    _concurrentPartitionMovements = parameters.concurrentPartitionMovements();
+    _concurrentInterBrokerPartitionMovements = parameters.concurrentInterBrokerPartitionMovements();
+    _concurrentIntraBrokerPartitionMovements = parameters.concurrentIntraBrokerPartitionMovements();
     _concurrentLeaderMovements = parameters.concurrentLeaderMovements();
     _skipHardGoalCheck = parameters.skipHardGoalCheck();
     _excludedTopics = parameters.excludedTopics();
@@ -51,6 +54,7 @@ class RebalanceRunnable extends OperationRunnable {
     _excludeRecentlyDemotedBrokers = parameters.excludeRecentlyDemotedBrokers();
     _excludeRecentlyRemovedBrokers = parameters.excludeRecentlyRemovedBrokers();
     _ignoreProposalCache = parameters.ignoreProposalCache();
+    _isReBalanceDiskMode =  parameters.isRebalanceDiskMode();
   }
 
   @Override
@@ -60,7 +64,8 @@ class RebalanceRunnable extends OperationRunnable {
                                                                 _modelCompletenessRequirements,
                                                                 _future.operationProgress(),
                                                                 _allowCapacityEstimation,
-                                                                _concurrentPartitionMovements,
+                                                                _concurrentInterBrokerPartitionMovements,
+                                                                _concurrentIntraBrokerPartitionMovements,
                                                                 _concurrentLeaderMovements,
                                                                 _skipHardGoalCheck,
                                                                 _excludedTopics,
@@ -68,6 +73,7 @@ class RebalanceRunnable extends OperationRunnable {
                                                                 _uuid,
                                                                 _excludeRecentlyDemotedBrokers,
                                                                 _excludeRecentlyRemovedBrokers,
-                                                                _ignoreProposalCache));
+                                                                _ignoreProposalCache,
+                                                                _isReBalanceDiskMode));
   }
 }

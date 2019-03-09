@@ -16,14 +16,15 @@ import javax.servlet.http.HttpServletRequest;
  *
  * <pre>
  *    POST /kafkacruisecontrol/admin?json=[true/false]&amp;disable_self_healing_for=[Set-of-{@link AnomalyType}]
- *    &amp;enable_self_healing_for=[Set-of-{@link AnomalyType}]&amp;concurrent_partition_movements_per_broker=[POSITIVE-INTEGER]
- *    &amp;concurrent_leader_movements=[POSITIVE-INTEGER]
+ *    &amp;enable_self_healing_for=[Set-of-{@link AnomalyType}]&amp;concurrent_inter_broker_partition_movements_per_broker=[POSITIVE-INTEGER]
+ *    &amp;concurrent_intra_broker_partition_movements_per_broker=[POSITIVE-INTEGER]&amp;concurrent_leader_movements=[POSITIVE-INTEGER]
  * </pre>
  */
 public class AdminParameters extends AbstractParameters {
   private Set<AnomalyType> _disableSelfHealingFor;
   private Set<AnomalyType> _enableSelfHealingFor;
-  private Integer _concurrentPartitionMovements;
+  private Integer _concurrentInterBrokerPartitionMovements;
+  private Integer _concurrentIntraBrokerPartitionMovements;
   private Integer _concurrentLeaderMovements;
 
   public AdminParameters(HttpServletRequest request) {
@@ -36,8 +37,9 @@ public class AdminParameters extends AbstractParameters {
     Map<Boolean, Set<AnomalyType>> selfHealingFor = ParameterUtils.selfHealingFor(_request);
     _enableSelfHealingFor = selfHealingFor.get(true);
     _disableSelfHealingFor = selfHealingFor.get(false);
-    _concurrentPartitionMovements = ParameterUtils.concurrentMovements(_request, true);
-    _concurrentLeaderMovements = ParameterUtils.concurrentMovements(_request, false);
+    _concurrentInterBrokerPartitionMovements = ParameterUtils.concurrentMovements(_request, true, false);
+    _concurrentIntraBrokerPartitionMovements = ParameterUtils.concurrentMovements(_request, false, true);
+    _concurrentLeaderMovements = ParameterUtils.concurrentMovements(_request, false, false);
   }
 
   public Set<AnomalyType> disableSelfHealingFor() {
@@ -48,8 +50,12 @@ public class AdminParameters extends AbstractParameters {
     return _enableSelfHealingFor;
   }
 
-  public Integer concurrentPartitionMovements() {
-    return _concurrentPartitionMovements;
+  public Integer concurrentInterBrokerPartitionMovements() {
+    return _concurrentInterBrokerPartitionMovements;
+  }
+
+  public Integer concurrentIntraBrokerPartitionMovements() {
+    return _concurrentIntraBrokerPartitionMovements;
   }
 
   public Integer concurrentLeaderMovements() {
