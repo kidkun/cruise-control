@@ -23,7 +23,7 @@ import java.util.Set;
 import java.util.function.Function;
 
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.requests.DescribeLogDirsResponse;
+import org.apache.kafka.common.requests.DescribeLogDirsResponse.ReplicaInfo;
 
 
 /**
@@ -541,7 +541,7 @@ public class Broker implements Serializable, Comparable<Broker> {
    * @param logdir The logdir of the disk.
    * @param replicaInfos the replicas hosted by this disk.
    */
-  public void populateDiskInfo(String logdir, Map<TopicPartition, DescribeLogDirsResponse.ReplicaInfo> replicaInfos) {
+  public void populateDiskInfo(String logdir, Map<TopicPartition, ReplicaInfo> replicaInfos) {
     Disk disk = disk(logdir);
     replicaInfos.forEach((key, value) -> {
       try {
@@ -590,11 +590,11 @@ public class Broker implements Serializable, Comparable<Broker> {
   }
 
   /**
-   * Get detailed disk utilization information of the broker.
+   * Get disk statistics of the broker.
    *
-   * @return The detailed disk utilization information.
+   * @return The disk statistics information.
    */
-  public Map<String, Double> diskUtils() {
+  public Map<String, Disk.DiskStat> diskStats() {
     if (_diskByLogdir == null || _diskByLogdir.isEmpty()) {
       return null;
     }
@@ -602,31 +602,9 @@ public class Broker implements Serializable, Comparable<Broker> {
     if (_diskByLogdir.values().stream().mapToInt(disk -> disk.replicas().size()).sum() == 0) {
       return null;
     }
-    Map<String, Double> diskUtilMap = new HashMap<>(_diskByLogdir.size());
-    for (Map.Entry<String, Disk> entry : _diskByLogdir.entrySet()) {
-      diskUtilMap.put(entry.getKey(), entry.getValue().load());
-    }
-    return diskUtilMap;
-  }
-
-  /**
-   * Get detailed disk capacity information of the broker.
-   *
-   * @return The detailed disk capacity information.
-   */
-  public Map<String, Double> diskCapacities() {
-    if (_diskByLogdir == null || _diskByLogdir.isEmpty()) {
-      return null;
-    }
-    // If information of replica placement over disk is not populated, return nothing.
-    if (_diskByLogdir.values().stream().mapToInt(disk -> disk.replicas().size()).sum() == 0) {
-      return null;
-    }
-    Map<String, Double> diskCapacityMap = new HashMap<>(_diskByLogdir.size());
-    for (Map.Entry<String, Disk> entry : _diskByLogdir.entrySet()) {
-      diskCapacityMap.put(entry.getKey(), entry.getValue().capacity());
-    }
-    return diskCapacityMap;
+    Map<String, Disk.DiskStat> diskStatMap = new HashMap<>(_diskByLogdir.size());
+    _diskByLogdir.forEach((k, v) -> diskStatMap.put(k, v.diskStat()));
+    return diskStatMap;
   }
 
   /**

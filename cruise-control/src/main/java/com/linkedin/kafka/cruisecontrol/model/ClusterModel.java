@@ -1122,8 +1122,7 @@ public class ClusterModel implements Serializable {
                                        broker.replicas().size(), broker.leaderReplicas().size(),
                                        _capacityEstimationInfoByBrokerId.get(broker.id()) != null,
                                        broker.capacityFor(Resource.DISK),
-                                       broker.diskUtils(),
-                                       broker.diskCapacities());
+                                       broker.diskStats());
     });
     return brokerStats;
   }

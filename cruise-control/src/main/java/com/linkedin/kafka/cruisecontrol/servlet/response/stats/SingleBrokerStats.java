@@ -5,9 +5,10 @@
 package com.linkedin.kafka.cruisecontrol.servlet.response.stats;
 
 import com.linkedin.kafka.cruisecontrol.model.Broker;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+
+import static com.linkedin.kafka.cruisecontrol.model.Disk.DiskStat;
 
 
 public class SingleBrokerStats {
@@ -15,28 +16,23 @@ public class SingleBrokerStats {
   private static final String BROKER = "Broker";
   private static final String BROKER_STATE = "BrokerState";
   private static final String DISK_STATE = "DiskState";
-  private static final String DISK_MB = "DiskMB";
-  private static final String DISK_PCT = "DiskPct";
   private final String _host;
   private final int _id;
   private final Broker.State _state;
   private final BasicStats _basicStats;
   private final boolean _isEstimated;
-  private final Map<String, Double> _utilByDisk;
-  private final Map<String, Double> _capacityByDisk;
+  private final Map<String, DiskStat> _diskStatByLogdir;
 
   SingleBrokerStats(String host, int id, Broker.State state, double diskUtil, double cpuUtil, double leaderBytesInRate,
                     double followerBytesInRate, double bytesOutRate, double potentialBytesOutRate, int numReplicas,
-                    int numLeaders, boolean isEstimated, double capacity, Map<String, Double> utilByDisk,
-                    Map<String, Double> capacityByDisk) {
+                    int numLeaders, boolean isEstimated, double capacity, Map<String, DiskStat> diskStats) {
     _host = host;
     _id = id;
     _state = state;
     _basicStats = new BasicStats(diskUtil, cpuUtil, leaderBytesInRate, followerBytesInRate, bytesOutRate,
                                  potentialBytesOutRate, numReplicas, numLeaders, capacity);
     _isEstimated = isEstimated;
-    _utilByDisk = utilByDisk;
-    _capacityByDisk = capacityByDisk;
+    _diskStatByLogdir = diskStats;
   }
 
   public String host() {
@@ -55,14 +51,11 @@ public class SingleBrokerStats {
     return _basicStats;
   }
 
-  Map<String, Double> utilByDisk() {
-    return Collections.unmodifiableMap(_utilByDisk);
+  public Map<String, DiskStat> diskStats() {
+    return _diskStatByLogdir;
   }
 
-  double pctForDisk(String logdir) {
-    return _capacityByDisk.get(logdir) < 0 ? -1 :
-                                             _utilByDisk.get(logdir) * 100 / _capacityByDisk.get(logdir);
-  }
+
 
   public boolean isEstimated() {
     return _isEstimated;
@@ -77,14 +70,9 @@ public class SingleBrokerStats {
     entry.put(HOST, _host);
     entry.put(BROKER, _id);
     entry.put(BROKER_STATE, _state);
-    if (_utilByDisk != null && !_utilByDisk.isEmpty()) {
-      Map<String, Object>  diskStates = new HashMap<>(_utilByDisk.size());
-      for (String logdir : _utilByDisk.keySet()) {
-        Map<String, Object> diskEntry = new HashMap<>(2);
-        diskEntry.put(DISK_PCT, pctForDisk(logdir));
-        diskEntry.put(DISK_MB, _capacityByDisk.get(logdir));
-        diskStates.put(logdir, diskEntry);
-      }
+    if (_diskStatByLogdir != null && !_diskStatByLogdir.isEmpty()) {
+      Map<String, Object>  diskStates = new HashMap<>(_diskStatByLogdir.size());
+      _diskStatByLogdir.forEach((k, v) -> diskStates.put(k, v.getJSONStructure()));
       entry.put(DISK_STATE, diskStates);
     }
     return entry;

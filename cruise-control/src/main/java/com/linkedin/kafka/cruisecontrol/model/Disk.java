@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * A class that holds the disk information of a broker, including its liveness, capacity and load.
@@ -21,7 +22,7 @@ public class Disk  implements Comparable<Disk> {
   private static final double DEAD_DISK_CAPACITY = -1.0;
 
   public enum State {
-    ALIVE, DEAD
+    ALIVE, DEAD, DEMOTED
   }
 
   private final String _logDir;
@@ -69,6 +70,10 @@ public class Disk  implements Comparable<Disk> {
 
   public Set<Replica> replicas() {
     return Collections.unmodifiableSet(_replicas);
+  }
+
+  public Set<Replica> leaderReplicas() {
+    return Collections.unmodifiableSet(_replicas.stream().filter(Replica::isLeader).collect(Collectors.toSet()));
   }
 
   public Broker broker() {
@@ -191,5 +196,65 @@ public class Disk  implements Comparable<Disk> {
   @Override
   public String toString() {
     return String.format("Disk[logdir=%s,state=%s,capacity=%f,replicaCount=%d]", _logDir, _state, _diskCapacity, _replicas.size());
+  }
+
+  public DiskStat diskStat() {
+    return new DiskStat((int) _replicas.stream().filter(Replica::isLeader).count(),
+                        _replicas.size(),
+                        _load, _diskCapacity);
+  }
+
+  /**
+   * A helper class to store statistics about the disk.
+   */
+  public static class DiskStat {
+    private int _numLeaderReplica;
+    private int _numReplica;
+    private double _load;
+    private double _capacity;
+    private static final String DISK_MB = "DiskMB";
+    private static final String DISK_PCT = "DiskPct";
+    private static final String NUM_LEADER_REPLICA = "NumLeaderReplica";
+    private static final String NUM_REPLICA = "NumReplica";
+
+    DiskStat(int numLeaderReplica, int numReplica, double load, double capacity) {
+      _numLeaderReplica = numLeaderReplica;
+      _numReplica = numReplica;
+      _load = load;
+      _capacity = capacity;
+    }
+
+    public int numLeaderReplica()  {
+      return _numLeaderReplica;
+    }
+
+    public int numReplica()  {
+      return _numReplica;
+    }
+
+    public double load()  {
+      return _load;
+    }
+
+    public double capacity()  {
+      return _capacity;
+    }
+
+    public double utilizationPercentage() {
+      return  _capacity < 0 ? -1 : _load * 100.0 / _capacity;
+    }
+
+    /*
+     * Return an object that can be further used
+     * to encode into JSON
+     */
+    public Map<String, Object> getJSONStructure()   {
+      Map<String, Object> entry = new HashMap<>(4);
+      entry.put(DISK_MB, _capacity);
+      entry.put(DISK_PCT, utilizationPercentage());
+      entry.put(NUM_LEADER_REPLICA, _numLeaderReplica);
+      entry.put(NUM_REPLICA, _numReplica);
+      return entry;
+    }
   }
 }

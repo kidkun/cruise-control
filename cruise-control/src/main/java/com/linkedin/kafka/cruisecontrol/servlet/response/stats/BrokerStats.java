@@ -17,6 +17,7 @@ import java.util.concurrent.ConcurrentSkipListMap;
 
 import static com.linkedin.kafka.cruisecontrol.servlet.response.ResponseUtils.JSON_VERSION;
 import static com.linkedin.kafka.cruisecontrol.servlet.response.ResponseUtils.VERSION;
+import static com.linkedin.kafka.cruisecontrol.model.Disk.DiskStat;
 
 
 /**
@@ -45,11 +46,11 @@ public class BrokerStats extends AbstractCruiseControlResponse {
   public void addSingleBrokerStats(String host, int id, Broker.State state, double diskUtil, double cpuUtil, double leaderBytesInRate,
                                    double followerBytesInRate, double bytesOutRate, double potentialBytesOutRate,
                                    int numReplicas, int numLeaders, boolean isEstimated, double capacity,
-                                   Map<String, Double> diskUtils, Map<String, Double> diskCapacities) {
+                                   Map<String, DiskStat> diskStats) {
 
     SingleBrokerStats singleBrokerStats =
         new SingleBrokerStats(host, id, state, diskUtil, cpuUtil, leaderBytesInRate, followerBytesInRate, bytesOutRate,
-                              potentialBytesOutRate, numReplicas, numLeaders, isEstimated, capacity, diskUtils, diskCapacities);
+                              potentialBytesOutRate, numReplicas, numLeaders, isEstimated, capacity, diskStats);
     _brokerStats.add(singleBrokerStats);
     _hostFieldLength = Math.max(_hostFieldLength, host.length());
     _hostStats.computeIfAbsent(host, h -> new BasicStats(0.0, 0.0, 0.0, 0.0,
@@ -161,21 +162,17 @@ public class BrokerStats extends AbstractCruiseControlResponse {
     // If disk stats exists, put disk stats.
     boolean isHeaderAppended = false;
     for (SingleBrokerStats stats : _brokerStats) {
-      if (stats.utilByDisk() != null) {
-        Map<String, Double> utilByDisk =  stats.utilByDisk();
-        for (Map.Entry<String, Double> entry : utilByDisk.entrySet()) {
+      Map<String, DiskStat> diskStats = stats.diskStats();
+      if (diskStats != null) {
+        for (Map.Entry<String, DiskStat> entry : diskStats.entrySet()) {
           if (!isHeaderAppended) {
-            sb.append(String.format("%n%n%" + _hostFieldLength + "s%15s%50s%26s%n", "HOST", "BROKER", "LOGDIR",
-                "DISK(MB)/_(%)_"));
+            sb.append(String.format("%n%n%" + _hostFieldLength + "s%15s%50s%26s%20s%n", "HOST", "BROKER", "LOGDIR",
+                                    "DISK(MB)/_(%)_", "LEADERS/REPLICAS"));
             isHeaderAppended = true;
           }
-          sb.append(String.format("%" + _hostFieldLength + "s,%14d,%49s,%19.3f/%05.2f%n",
-                                  stats.host(),
-                                  stats.id(),
-                                  entry.getKey(),
-                                  entry.getValue(),
-                                  stats.pctForDisk(entry.getKey())
-          ));
+          sb.append(String.format("%" + _hostFieldLength + "s,%14d,%49s,%19.3f/%05.2f,%14d/%d%n", stats.host(), stats.id(),
+                                  entry.getKey(), entry.getValue(), entry.getValue().utilizationPercentage(),
+                                  entry.getValue().numLeaderReplica(), entry.getValue().numReplica()));
         }
       }
     }

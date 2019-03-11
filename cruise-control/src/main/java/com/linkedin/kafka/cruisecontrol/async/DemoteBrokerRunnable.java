@@ -9,10 +9,12 @@ import com.linkedin.kafka.cruisecontrol.executor.strategy.ReplicaMovementStrateg
 import com.linkedin.kafka.cruisecontrol.servlet.parameters.DemoteBrokerParameters;
 import com.linkedin.kafka.cruisecontrol.servlet.response.OptimizationResult;
 import java.util.Collection;
+import java.util.Map;
+import java.util.Set;
 
 
 /**
- * The async runnable for {@link KafkaCruiseControl#demoteBrokers(Collection, boolean,
+ * The async runnable for {@link KafkaCruiseControl#demoteBrokers(Collection, java.util.Map, boolean,
  * com.linkedin.kafka.cruisecontrol.async.progress.OperationProgress, boolean, Integer, boolean, boolean,
  * ReplicaMovementStrategy, String, boolean)}
  */
@@ -26,6 +28,7 @@ public class DemoteBrokerRunnable extends OperationRunnable {
   private final String _uuid;
   private final boolean _excludeRecentlyDemotedBrokers;
   private final ReplicaMovementStrategy _replicaMovementStrategy;
+  private final Map<Integer, Set<String>> _brokerIdAndLogdirs;
 
   DemoteBrokerRunnable(KafkaCruiseControl kafkaCruiseControl,
                        OperationFuture future,
@@ -41,11 +44,13 @@ public class DemoteBrokerRunnable extends OperationRunnable {
     _replicaMovementStrategy = parameters.replicaMovementStrategy();
     _uuid = uuid;
     _excludeRecentlyDemotedBrokers = parameters.excludeRecentlyDemotedBrokers();
+    _brokerIdAndLogdirs = parameters.brokerIdAndLogdirs();
   }
 
   @Override
   protected OptimizationResult getResult() throws Exception {
     return new OptimizationResult(_kafkaCruiseControl.demoteBrokers(_brokerIds,
+                                                                    _brokerIdAndLogdirs,
                                                                     _dryRun,
                                                                     _future.operationProgress(),
                                                                     _allowCapacityEstimation,

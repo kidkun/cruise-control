@@ -82,4 +82,16 @@ public class TestConstants {
     capacity.put(Resource.NW_OUT, TestConstants.MEDIUM_BROKER_CAPACITY);
     BROKER_CAPACITY = Collections.unmodifiableMap(capacity);
   }
+
+  // Disk capacity (homogeneous cluster is assumed).
+  public final static Map<String, Double> DISK_CAPACITY;
+  public static final String LOGDIR0 = "/mnt/i00";
+  public static final String LOGDIR1 = "/mnt/i01";
+
+  static {
+    Map<String, Double> capacity = new HashMap<>();
+    capacity.put(LOGDIR0, TestConstants.LARGE_BROKER_CAPACITY / 2);
+    capacity.put(LOGDIR1, TestConstants.LARGE_BROKER_CAPACITY / 2);
+    DISK_CAPACITY = Collections.unmodifiableMap(capacity);
+  }
 }

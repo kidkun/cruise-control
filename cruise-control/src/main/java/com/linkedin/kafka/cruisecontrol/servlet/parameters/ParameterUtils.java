@@ -93,6 +93,7 @@ public class ParameterUtils {
   public static final String EXCLUDE_RECENTLY_REMOVED_BROKERS_PARAM = "exclude_recently_removed_brokers";
   public static final String REPLICA_MOVEMENT_STRATEGIES_PARAM = "replica_movement_strategies";
   public static final String REBALANCE_DISK_MODE_PARAM = "rebalance_disk";
+  public static final String BROKER_ID_AND_LOGDIR_PARAM = "brokerid_and_logdir";
 
   private static final Map<EndPoint, Set<String>> VALID_ENDPOINT_PARAM_NAMES;
 
@@ -189,6 +190,7 @@ public class ParameterUtils {
     demoteBroker.add(EXCLUDE_FOLLOWER_DEMOTION_PARAM);
     demoteBroker.add(EXCLUDE_RECENTLY_DEMOTED_BROKERS_PARAM);
     demoteBroker.add(REPLICA_MOVEMENT_STRATEGIES_PARAM);
+    demoteBroker.add(BROKER_ID_AND_LOGDIR_PARAM);
 
     Set<String> rebalance = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
     rebalance.add(DRY_RUN_PARAM);
@@ -658,10 +660,25 @@ public class ParameterUtils {
     if (parameterString != null) {
       brokerIds = Arrays.stream(urlDecode(request.getParameter(parameterString)).split(",")).map(Integer::parseInt).collect(Collectors.toList());
     }
-    if (endPoint(request) != FIX_OFFLINE_REPLICAS && brokerIds.isEmpty()) {
+    if ((endPoint(request) != FIX_OFFLINE_REPLICAS || endPoint(request) != DEMOTE_BROKER)
+        && brokerIds.isEmpty()) {
       throw new IllegalArgumentException("Target broker ID is not provided.");
     }
     return Collections.unmodifiableList(brokerIds);
+  }
+
+  static Map<Integer, Set<String>> brokerIdAndLogdirs(HttpServletRequest request) throws UnsupportedEncodingException {
+    final Map<Integer, Set<String>> brokerIdAndLogdirs = new HashMap<>();
+    String parameterString = caseSensitiveParameterName(request, BROKER_ID_AND_LOGDIR_PARAM);
+    if (parameterString != null) {
+      Arrays.stream(urlDecode(request.getParameter(parameterString)).split(",")).forEach(e -> {
+        Integer index = e.indexOf("-");
+        Integer brokerId = Integer.parseInt(e.substring(0, index));
+        brokerIdAndLogdirs.putIfAbsent(brokerId, new HashSet<>());
+        brokerIdAndLogdirs.get(brokerId).add(e.substring(index + 1));
+      });
+    }
+    return Collections.unmodifiableMap(brokerIdAndLogdirs);
   }
 
   /**
