@@ -23,6 +23,8 @@ public class AnomalyDetectorUtils {
       return AnomalyType.BROKER_FAILURE;
     } else if (anomaly instanceof KafkaMetricAnomaly) {
       return AnomalyType.METRIC_ANOMALY;
+    } else if (anomaly instanceof DiskFailures) {
+      return AnomalyType.DISK_FAILURE;
     } else {
       throw new IllegalStateException("Unrecognized type for anomaly " + anomaly);
     }
